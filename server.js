@@ -4,11 +4,27 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(cors());
-app.use(express.json({ limit: '50mb' })); // מאפשר קבלת קבצי JSON גדולים (כמו היסטוריית תמלול)
+// --- הגדרות אבטחה (CORS) ---
+const allowedOrigins = [
+    'https://akol-catuv.web.app',
+    'https://purim-4c32f.web.app'
+];
+
+app.use(cors({
+    origin: function (origin, callback) {
+        if (!origin || allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    }
+}));
+
+// מאפשר קבלת קבצי JSON גדולים (עד 50MB)
+app.use(express.json({ limit: '50mb' }));
 
 // ==========================================
-// 1. נתיב התמלול (כבר עשינו)
+// 1. נתיב התמלול (Transcribe)
 // ==========================================
 app.post('/api/transcribe', async (req, res) => {
     try {
@@ -20,13 +36,12 @@ app.post('/api/transcribe', async (req, res) => {
 הוראה: תמלל את האודיו לעברית תקנית.
 כללים:
 1. תקן שגיאות הגייה ודקדוק.
-2. הפלט חייב להיות אובייקט JSON תקין בלבד, ללא שום טקסט נוסף וללא עיצוב, במבנה הבא בדיוק:
+2. הפלט חייב להיות אובייקט JSON תקין בלבד, במבנה הבא בדיוק:
 {
-  "summary": "כתוב סיכום של התוכן בשפה העברית בלבד. הסיכום חייב להיות באורך של עד 25 מילים ולא מעבר לכך.",
+  "summary": "כתוב סיכום של התוכן בשפה העברית בלבד (עד 25 מילים).",
   "subtitles": [{"start":"HH:MM:SS,mmm","end":"HH:MM:SS,mmm","text":"..."}]
 }
-3. קריטי: אסור להשתמש במרכאות כפולות (") בתוך ערכי הטקסט (summary או text). השתמש בגרש יחיד (') בלבד.
-4. אל תרד שורות (Enter) בתוך ערכי הטקסט.
+3. קריטי: אסור להשתמש במרכאות כפולות (") בתוך ערכי הטקסט. השתמש בגרש יחיד (') בלבד.
 ${promptCtx ? 'הקשר: ' + promptCtx : ''}`;
 
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -48,7 +63,7 @@ ${promptCtx ? 'הקשר: ' + promptCtx : ''}`;
 });
 
 // ==========================================
-// 2. נתיב הצ'אט החדש והסודי!
+// 2. נתיב הצ'אט (Chat)
 // ==========================================
 app.post('/api/chat', async (req, res) => {
     try {
@@ -56,30 +71,20 @@ app.post('/api/chat', async (req, res) => {
         if (!apiKey) return res.status(400).json({ error: 'חסר מפתח API' });
 
         const model = modelName || 'gemini-2.5-flash';
-
-        // ------------------------------------------------------------------
-        // הפרומפט הסודי של הצ'אט! מוגן לחלוטין בשרת
-        // ------------------------------------------------------------------
         const systemPrompt = `
         You are a smart assistant for a transcription app.
         Use the following transcript JSON for grounding: ${JSON.stringify(contextSubs)}.
-
         User Question: "${msgPrompt}"
-        
         Instructions:
         1. Answer in Hebrew based ONLY on the transcript.
-        2. If the answer is found in specific segments, citation is MANDATORY.
-        3. Citation format: Append [[id:mm:ss]] to the relevant sentence. 
-        4. Format lists using simple bullet points.
-        5. DO NOT REPEAT THE TRANSCRIPT. Summarize and answer concisely.
-        6. If the text contains [דובר] or [שואל], prefix your response with that tag to indicate who is speaking.
+        2. Citation format: Append [[id:mm:ss]] to the relevant sentence.
+        3. Format lists using simple bullet points.
+        4. If the text contains [דובר] or [שואל], prefix your response with that tag.
         `;
 
-        // אנחנו מלבישים את הפרומפט הסודי על ההודעה האחרונה של המשתמש
         const lastUserMessage = historyForApi[historyForApi.length - 1];
         lastUserMessage.parts[0].text = systemPrompt;
 
-        // שולחים לגוגל
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
         const response = await fetch(geminiUrl, {
             method: 'POST',
