@@ -4,27 +4,18 @@ const cors = require('cors');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// מאפשר לכל אתר לפנות לשרת הזה (בהמשך נוכל להגביל את זה רק לאתר שלך)
 app.use(cors());
+app.use(express.json({ limit: '50mb' })); // מאפשר קבלת קבצי JSON גדולים (כמו היסטוריית תמלול)
 
-// מאפשר לשרת לקרוא מידע מסוג JSON
-app.use(express.json());
-
-// נקודת הקצה שמקבלת את הבקשה מהדפדפן של הלקוח
+// ==========================================
+// 1. נתיב התמלול (כבר עשינו)
+// ==========================================
 app.post('/api/transcribe', async (req, res) => {
     try {
-        // הנתונים שהדפדפן שולח אלינו (מפתח ה-API והקובץ שכבר הועלה לגוגל)
         const { apiKey, fileUri, mimeType, modelName, promptCtx } = req.body;
-
-        if (!apiKey || !fileUri) {
-            return res.status(400).json({ error: 'חסרים נתונים: מפתח API או URI של קובץ' });
-        }
+        if (!apiKey || !fileUri) return res.status(400).json({ error: 'חסר מפתח או קובץ' });
 
         const model = modelName || 'gemini-2.5-flash';
-
-        // ------------------------------------------------------------------
-        // הסוד שלך! הפרומפט הזה חי רק בשרת ואף אחד לא יכול לראות או להעתיק אותו
-        // ------------------------------------------------------------------
         const systemPrompt = `תפקיד: מומחה תמלול.
 הוראה: תמלל את האודיו לעברית תקנית.
 כללים:
@@ -38,40 +29,70 @@ app.post('/api/transcribe', async (req, res) => {
 4. אל תרד שורות (Enter) בתוך ערכי הטקסט.
 ${promptCtx ? 'הקשר: ' + promptCtx : ''}`;
 
-        // פנייה לשרתים של גוגל באמצעות המפתח של הלקוח אבל עם הפרומפט שלך
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-        
         const response = await fetch(geminiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                contents: [{
-                    parts: [
-                        { text: systemPrompt },
-                        { fileData: { mimeType: mimeType || 'audio/mpeg', fileUri: fileUri } }
-                    ]
-                }],
+                contents: [{ parts: [{ text: systemPrompt }, { fileData: { mimeType: mimeType || 'audio/mpeg', fileUri: fileUri } }] }],
                 generationConfig: { responseMimeType: "application/json" }
             })
         });
 
-        if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`שגיאה מגוגל: ${response.status} - ${errorText}`);
-        }
-
-        const data = await response.json();
-        
-        // שליחת התשובה המוכנה (התמלול) חזרה לדפדפן של הלקוח
-        res.json(data);
-
+        if (!response.ok) throw new Error(await response.text());
+        res.json(await response.json());
     } catch (error) {
-        console.error('שגיאת שרת:', error);
+        console.error('Transcription Error:', error);
         res.status(500).json({ error: error.message });
     }
 });
 
-// הפעלת השרת
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+// ==========================================
+// 2. נתיב הצ'אט החדש והסודי!
+// ==========================================
+app.post('/api/chat', async (req, res) => {
+    try {
+        const { apiKey, modelName, historyForApi, contextSubs, msgPrompt } = req.body;
+        if (!apiKey) return res.status(400).json({ error: 'חסר מפתח API' });
+
+        const model = modelName || 'gemini-2.5-flash';
+
+        // ------------------------------------------------------------------
+        // הפרומפט הסודי של הצ'אט! מוגן לחלוטין בשרת
+        // ------------------------------------------------------------------
+        const systemPrompt = `
+        You are a smart assistant for a transcription app.
+        Use the following transcript JSON for grounding: ${JSON.stringify(contextSubs)}.
+
+        User Question: "${msgPrompt}"
+        
+        Instructions:
+        1. Answer in Hebrew based ONLY on the transcript.
+        2. If the answer is found in specific segments, citation is MANDATORY.
+        3. Citation format: Append [[id:mm:ss]] to the relevant sentence. 
+        4. Format lists using simple bullet points.
+        5. DO NOT REPEAT THE TRANSCRIPT. Summarize and answer concisely.
+        6. If the text contains [דובר] or [שואל], prefix your response with that tag to indicate who is speaking.
+        `;
+
+        // אנחנו מלבישים את הפרומפט הסודי על ההודעה האחרונה של המשתמש
+        const lastUserMessage = historyForApi[historyForApi.length - 1];
+        lastUserMessage.parts[0].text = systemPrompt;
+
+        // שולחים לגוגל
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        const response = await fetch(geminiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: historyForApi })
+        });
+
+        if (!response.ok) throw new Error(await response.text());
+        res.json(await response.json());
+    } catch (error) {
+        console.error('Chat API Error:', error);
+        res.status(500).json({ error: error.message });
+    }
 });
+
+app.listen(PORT, () => console.log(`Server is running on port ${PORT}`));
