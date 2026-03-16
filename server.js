@@ -1,5 +1,7 @@
 const express = require('express');
 const cors = require('cors');
+// הוספנו את זה כדי לפתור את קריסת השרת ולתמוך ב-fetch
+const fetch = require('node-fetch'); 
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -25,7 +27,7 @@ app.post('/api/transcribe', async (req, res) => {
 
         const model = modelName || 'gemini-2.5-flash';
         
-        // 1. העברת כל חוקי התמלול הנוקשים ל-System Instruction
+        // 1. העברת כל חוקי התמלול הנוקשים ל-System Instruction - בדיוק כמו שהיה לך!
         const systemInstructionText = `תפקיד: מומחה תמלול.
 המטרה העיקרית היא להפיק תמלול מדויק של קובץ האודיו לשפה עברית תקנית ורצופה, ולפלט את התוצאה כקובץ SRT (כתוביות). הדגש הוא על דיוק סמנטי-פונטי: לשקף את המשמעות המילולית ואת הכתיב התקני של המילים בעברית מודרנית, ללא תלות בהגייה המקומית שנשמעה בקובץ. האודיו כולל שיחה או הרצאה בעברית שמשולבים בה מילים וביטויים רבים מ"לשון הקודש" (ארמית ועברית תלמודית/רבנית) עם הגייה מסורתית.
 
@@ -82,9 +84,11 @@ app.post('/api/transcribe', async (req, res) => {
             })
         });
 
+        // טיפול נכון בשגיאות API (כמו שגיאת העומס 429) - מעביר אותן לאתר
         if (!response.ok) {
             const errText = await response.text();
-            throw new Error(`שגיאת API מגוגל: ${errText}`);
+            console.error('Google API Error:', errText);
+            return res.status(response.status).json({ error: 'שגיאת API מגוגל', details: errText });
         }
 
         res.json(await response.json());
@@ -147,9 +151,11 @@ app.post('/api/chat', async (req, res) => {
             })
         });
 
+        // טיפול נכון גם בשגיאות של ה-Chat API
         if (!response.ok) {
             const errText = await response.text();
-            throw new Error(`שגיאת API מגוגל: ${errText}`);
+            console.error('Google Chat API Error:', errText);
+            return res.status(response.status).json({ error: 'שגיאת API מגוגל', details: errText });
         }
         
         res.json(await response.json());
@@ -158,4 +164,9 @@ app.post('/api/chat', async (req, res) => {
         console.error('Chat API Error:', error);
         res.status(500).json({ error: error.message });
     }
+});
+
+// הפעלת השרת 
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
 });
