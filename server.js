@@ -1,10 +1,42 @@
 const express = require('express');
 const cors = require('cors');
-// הוספנו את זה כדי לפתור את קריסת השרת ולתמוך ב-fetch
 const fetch = require('node-fetch'); 
-const mongoose = require('mongoose'); // שורה חדשה
+const mongoose = require('mongoose');
+
+// --- 🔒 אבטחה: הגדרת פיירבייס בשרת ---
+const admin = require('firebase-admin');
+// אתחל את פיירבייס מנהל (Firebase Admin) - ברוב המקרים אין צורך בפרטים נוספים כשמשתמשים רק לאימות טוקנים
+if (!admin.apps.length) {
+    admin.initializeApp();
+}
+
+// 🔒 פונקציית "השומר": בודקת את תעודת הזהות (Token) לפני שהיא נותנת להיכנס
+const verifyFirebaseToken = async (req, res, next) => {
+    // 1. מחפשים את תעודת הזהות (הטוקן) בבקשה
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'גישה נדחתה. חסרה תעודת זהות (Token).' });
+    }
+
+    const idToken = authHeader.split('Bearer ')[1];
+
+    try {
+        // 2. שואלים את פיירבייס אם התעודה אמיתית למי היא שייכת
+        const decodedToken = await admin.auth().verifyIdToken(idToken);
+        
+        // 3. רושמים על ה"מבקר" מה האימייל האמיתי שלו ומכניסים אותו פנימה!
+        req.userEmail = decodedToken.email; 
+        next(); // הכל תקין, תעבור הלאה לפונקציה של הבקשה
+
+    } catch (error) {
+        console.error('❌ שגיאת אימות טוקן:', error);
+        return res.status(403).json({ error: 'תעודת זהות (Token) לא חוקית או פגה תוקף.' });
+    }
+};
+
 const app = express();
 const PORT = process.env.PORT || 3000;
+
 // --- חיבור למסד הנתונים MongoDB Atlas ---
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('✅ Connected to MongoDB Atlas'))
@@ -17,18 +49,26 @@ const userSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
+
 app.use(cors());
-app.use(express.json({ limit: '50mb' })); // מאפשר קבלת קבצי JSON גדולים (כמו היסטוריית תמלול)
-// שמירת מפתח API למשתמש
-app.post('/api/save-user-key', async (req, res) => {
+app.use(express.json({ limit: '50mb' })); 
+
+// ----------------------------------------------------
+// 🔒 שמירת מפתח API למשתמש (עכשיו עם אימות!)
+// ----------------------------------------------------
+// הוספנו את verifyFirebaseToken כאן - הוא יעבוד לפני שהקוד הפנימי רץ
+app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
     try {
-        const { email, apiKey } = req.body;
-        if (!email || !apiKey) return res.status(400).json({ error: 'חסרים נתונים' });
+        // במקום להאמין לאימייל שהמשתמש כתב, אנחנו משתמשים באימייל שהשומר מצא בתעודה!
+        const secureEmail = req.userEmail; 
+        const { apiKey } = req.body;
+        
+        if (!apiKey && apiKey !== '') return res.status(400).json({ error: 'חסר מפתח API' });
         
         await User.findOneAndUpdate(
-            { email: email.toLowerCase() },
+            { email: secureEmail.toLowerCase() },
             { apiKey: apiKey, updatedAt: Date.now() },
-            { upsert: true } // יוצר משתמש חדש אם הוא לא קיים
+            { upsert: true } 
         );
         res.json({ success: true });
     } catch (error) {
@@ -36,18 +76,23 @@ app.post('/api/save-user-key', async (req, res) => {
     }
 });
 
-// שליפת מפתח API למשתמש
-app.get('/api/get-user-key', async (req, res) => {
+// ----------------------------------------------------
+// 🔒 שליפת מפתח API למשתמש (עכשיו עם אימות!)
+// ----------------------------------------------------
+app.get('/api/get-user-key', verifyFirebaseToken, async (req, res) => {
     try {
-        const email = req.query.email;
-        if (!email) return res.status(400).json({ error: 'חסר אימייל' });
+        // שוב, מאמינים רק לאימייל המאומת של השומר
+        const secureEmail = req.userEmail;
         
-        const user = await User.findOne({ email: email.toLowerCase() });
+        const user = await User.findOne({ email: secureEmail.toLowerCase() });
         res.json({ apiKey: user ? user.apiKey : null });
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });
+
+// ==========================================
+// 1. נתיב התמלול (מכאן הכל נשאר בדיוק אותו דבר)...
 // ==========================================
 // 1. נתיב התמלול (גרסה משופרת לסנכרון ואי-תרגום)
 // ==========================================
