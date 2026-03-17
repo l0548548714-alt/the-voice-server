@@ -9,7 +9,7 @@ const admin = require('firebase-admin');
 if (!admin.apps.length) {
     try {
         // ✅ תיקון: שימוש במשתנה סביבה עם פרטי Service Account
-        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+         const serviceAccount = JSON.parse(process.env.FIREBASE_JSON);
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount)
         });
