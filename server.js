@@ -2,26 +2,20 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch'); 
 const mongoose = require('mongoose');
+
 // --- 🔒 אבטחה: הגדרת פיירבייס בשרת ---
 const admin = require('firebase-admin');
 
 if (!admin.apps.length) {
-    if (process.env.FIREBASE_JSON) {
-        try {
-            // השרת מושך את הטקסט מהכספת של רנדר והופך אותו לאובייקט
-            const serviceAccount = JSON.parse(process.env.FIREBASE_JSON);
-            admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount)
-            });
-            console.log('✅ Firebase Admin initialized securely with Service Account.');
-        } catch (err) {
-            console.error('❌ Error parsing FIREBASE_JSON:', err);
-            // גיבוי למקרה שה-JSON לא תקין
-            admin.initializeApp();
-        }
-    } else {
-        console.log('⚠️ No FIREBASE_JSON found, using default initialization.');
-        admin.initializeApp();
+    try {
+        // ✅ תיקון: שימוש במשתנה סביבה עם פרטי Service Account
+        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        console.log('✅ Firebase Admin initialized');
+    } catch (err) {
+        console.error('❌ Firebase Admin initialization error:', err.message);
     }
 }
 
@@ -37,12 +31,13 @@ const verifyFirebaseToken = async (req, res, next) => {
     try {
         const decodedToken = await admin.auth().verifyIdToken(idToken);
         req.userEmail = decodedToken.email; 
-        next(); 
+        next();
     } catch (error) {
-        console.error('❌ שגיאת אימות טוקן:', error);
-        return res.status(403).json({ error: 'תעודת זהות לא חוקית או פגה תוקף.' });
+        console.error('❌ שגיאת אימות טוקן:', error.message);
+        return res.status(403).json({ error: 'תעודת זהות (Token) לא חוקית או פגה תוקף.' });
     }
 };
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -51,7 +46,6 @@ mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('✅ Connected to MongoDB Atlas'))
     .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
-// הגדרת מבנה הטבלה לשמירת מפתחות (Schema)
 const userSchema = new mongoose.Schema({
     email: { type: String, unique: true, required: true },
     apiKey: String,
@@ -63,12 +57,10 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' })); 
 
 // ----------------------------------------------------
-// 🔒 שמירת מפתח API למשתמש (עכשיו עם אימות!)
+// 🔒 שמירת מפתח API למשתמש
 // ----------------------------------------------------
-// הוספנו את verifyFirebaseToken כאן - הוא יעבוד לפני שהקוד הפנימי רץ
 app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
     try {
-        // במקום להאמין לאימייל שהמשתמש כתב, אנחנו משתמשים באימייל שהשומר מצא בתעודה!
         const secureEmail = req.userEmail; 
         const { apiKey } = req.body;
         
@@ -81,46 +73,40 @@ app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
         );
         res.json({ success: true });
     } catch (error) {
+        console.error('❌ save-user-key error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
 
 // ----------------------------------------------------
-// 🔒 שליפת מפתח API למשתמש (עכשיו עם אימות!)
+// 🔒 שליפת מפתח API למשתמש
 // ----------------------------------------------------
 app.get('/api/get-user-key', verifyFirebaseToken, async (req, res) => {
     try {
-        // שוב, מאמינים רק לאימייל המאומת של השומר
         const secureEmail = req.userEmail;
-        
         const user = await User.findOne({ email: secureEmail.toLowerCase() });
         res.json({ apiKey: user ? user.apiKey : null });
     } catch (error) {
+        console.error('❌ get-user-key error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
 
 // ==========================================
-// 1. נתיב התמלול (מכאן הכל נשאר בדיוק אותו דבר)...
+// 1. נתיב התמלול
 // ==========================================
-// 1. נתיב התמלול (גרסה משופרת לסנכרון ואי-תרגום)
-// ==========================================
-
 app.post('/api/transcribe', async (req, res) => {
-    // הגדלת זמן ה-Timeout של הבקשה הספציפית הזו בשרת (לדוגמה: 5 דקות)
     req.setTimeout(300000); 
 
     try {
         const { apiKey, fileUri, mimeType, modelName, promptCtx } = req.body;
         
-        // ולידציה בסיסית
         if (!apiKey || !fileUri) {
             return res.status(400).json({ error: 'חסר מפתח API או File URI של הקובץ' });
         }
 
         const model = modelName || 'gemini-2.5-flash';
         
-        // 1. ההנחיות המעודכנות: כוללות סנכרון לנגן ואי-תרגום שפות זרות
         const systemInstructionText = `תפקיד: מומחה תמלול וסנכרון כתוביות מקצועי.
 המטרה: להפיק תמלול מדויק בפורמט JSON הכולל כתוביות (SRT style) וסיכום. האודיו כולל שיחה או הרצאה בעברית שמשולבים בה מילים וביטויים רבים מ"לשון הקודש" עם הגייה מסורתית.
 
@@ -156,7 +142,7 @@ app.post('/api/transcribe', async (req, res) => {
     {"start":"00:00:06,000","end":"00:00:08,000","text":"וזה כמובן מאוד חשוב."}
   ]
 }`;
-        // 2. בניית התוכן
+
         const requestParts = [
             { fileData: { mimeType: mimeType || 'audio/mpeg', fileUri: fileUri } }
         ];
@@ -167,7 +153,6 @@ app.post('/api/transcribe', async (req, res) => {
 
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
         
-        // 3. השליחה לגוגל - תיקון המבנה של הפקודה
         const response = await fetch(geminiUrl, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -193,7 +178,7 @@ app.post('/api/transcribe', async (req, res) => {
 });
 
 // ==========================================
-// 2. נתיב הצ'אט (ללא שינוי)
+// 2. נתיב הצ'אט
 // ==========================================
 app.post('/api/chat', async (req, res) => {
     try {
@@ -249,12 +234,14 @@ app.post('/api/chat', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
 // ==========================================
-// 3. נתיב השכמה (Ping) למניעת הירדמות מוחלטת
+// 3. נתיב השכמה (Ping)
 // ==========================================
 app.get('/api/wakeup', (req, res) => {
     res.json({ status: 'awake', message: 'בוקר טוב! השרת התעורר ומוכן לעבודה.' });
 });
+
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
