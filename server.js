@@ -2,17 +2,31 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch'); 
 const mongoose = require('mongoose');
-
 // --- 🔒 אבטחה: הגדרת פיירבייס בשרת ---
 const admin = require('firebase-admin');
-// אתחל את פיירבייס מנהל (Firebase Admin) - ברוב המקרים אין צורך בפרטים נוספים כשמשתמשים רק לאימות טוקנים
+
 if (!admin.apps.length) {
-    admin.initializeApp();
+    if (process.env.FIREBASE_JSON) {
+        try {
+            // השרת מושך את הטקסט מהכספת של רנדר והופך אותו לאובייקט
+            const serviceAccount = JSON.parse(process.env.FIREBASE_JSON);
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount)
+            });
+            console.log('✅ Firebase Admin initialized securely with Service Account.');
+        } catch (err) {
+            console.error('❌ Error parsing FIREBASE_JSON:', err);
+            // גיבוי למקרה שה-JSON לא תקין
+            admin.initializeApp();
+        }
+    } else {
+        console.log('⚠️ No FIREBASE_JSON found, using default initialization.');
+        admin.initializeApp();
+    }
 }
 
 // 🔒 פונקציית "השומר": בודקת את תעודת הזהות (Token) לפני שהיא נותנת להיכנס
 const verifyFirebaseToken = async (req, res, next) => {
-    // 1. מחפשים את תעודת הזהות (הטוקן) בבקשה
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
         return res.status(401).json({ error: 'גישה נדחתה. חסרה תעודת זהות (Token).' });
@@ -21,19 +35,14 @@ const verifyFirebaseToken = async (req, res, next) => {
     const idToken = authHeader.split('Bearer ')[1];
 
     try {
-        // 2. שואלים את פיירבייס אם התעודה אמיתית למי היא שייכת
         const decodedToken = await admin.auth().verifyIdToken(idToken);
-        
-        // 3. רושמים על ה"מבקר" מה האימייל האמיתי שלו ומכניסים אותו פנימה!
         req.userEmail = decodedToken.email; 
-        next(); // הכל תקין, תעבור הלאה לפונקציה של הבקשה
-
+        next(); 
     } catch (error) {
         console.error('❌ שגיאת אימות טוקן:', error);
-        return res.status(403).json({ error: 'תעודת זהות (Token) לא חוקית או פגה תוקף.' });
+        return res.status(403).json({ error: 'תעודת זהות לא חוקית או פגה תוקף.' });
     }
 };
-
 const app = express();
 const PORT = process.env.PORT || 3000;
 
