@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch'); 
+console.log('🔍 MONGO_URI:', process.env.MONGO_URI?.substring(0, 60));
 const mongoose = require('mongoose');
 
 // --- 🔒 אבטחה: הגדרת פיירבייס בשרת ---
