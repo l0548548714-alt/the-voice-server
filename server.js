@@ -9,8 +9,7 @@ const admin = require('firebase-admin');
 
 if (!admin.apps.length) {
     try {
-        // ✅ תיקון: שימוש במשתנה סביבה עם פרטי Service Account
-         const serviceAccount = JSON.parse(process.env.FIREBASE_JSON);
+        const serviceAccount = JSON.parse(process.env.FIREBASE_JSON);
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount)
         });
@@ -20,7 +19,7 @@ if (!admin.apps.length) {
     }
 }
 
-// 🔒 פונקציית "השומר": בודקת את תעודת הזהות (Token) לפני שהיא נותנת להיכנס
+// 🔒 פונקציית "השומר": בודקת את תעודת הזהות (Token)
 const verifyFirebaseToken = async (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -41,11 +40,6 @@ const verifyFirebaseToken = async (req, res, next) => {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-
-// --- חיבור למסד הנתונים MongoDB Atlas ---
-mongoose.connect(process.env.MONGO_URI)
-    .then(() => console.log('✅ Connected to MongoDB Atlas'))
-    .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
 const userSchema = new mongoose.Schema({
     email: { type: String, unique: true, required: true },
@@ -109,38 +103,25 @@ app.post('/api/transcribe', async (req, res) => {
         const model = modelName || 'gemini-2.5-flash';
         
         const systemInstructionText = `תפקיד: מומחה תמלול וסנכרון כתוביות מקצועי.
-המטרה: להפיק תמלול מדויק בפורמט JSON הכולל כתוביות (SRT style) וסיכום. האודיו כולל שיחה או הרצאה בעברית שמשולבים בה מילים וביטויים רבים מ"לשון הקודש" עם הגייה מסורתית.
+המטרה: להפיק תמלול מדויק בפורמט JSON הכולל כתוביות (SRT style) וסיכום.
 
 חוקי שפה ותרגום (קריטי):
-1. אין לתרגם שפות! אם הדובר עובר לאנגלית (או שפה זרה אחרת), תמלל את המילים בשפת המקור (באותיות לטיניות). אל תתרגם לעברית.
-2. התיקון היחיד המותר הוא "נורמליזציה" של הגיית לשון הקודש לכתיב עברי תקני כמפורט בהמשך.
+1. אין לתרגם שפות! תמלל במקור.
+2. הקפד על כתיב עברי תקני.
 
-חוקי איכות התמלול והסנכרון (קריטי לנגן ולחוויית קריאה):
-1. תמלול נקי (Clean Verbatim): התעלם לחלוטין ממילות מילוי ('אה', 'אממ', 'אהה'), גמגומים וחזרות מיותרות. אל תכתוב אותן. ספק טקסט רציף וקריא.
-2. מניעת הזיות (Hallucinations): בשתיקות ארוכות, רעשי רקע או מוזיקה - אל תמציא טקסט! התעלם לחלוטין משקט. אם הדיבור אינו מובן כלל, השתמש בתגית [לא ברור].
-3. אסתטיקת כתוביות: לעולם אל תסיים כתובית באות יחס (כמו 'ו', 'ב', 'ל', 'מ', 'ש') או בפסיק (,). נקודה (.) בסוף משפט תמיד תסיים את הכתובית הנוכחית.
-4. מקטעים קצרים: כל כתובית צריכה להכיל בין 3 ל-7 מילים, או להימשך מקסימום 5 שניות.
-5. דיוק זמנים: זמני ה-start וה-end חייבים להיות מדויקים פונטית לדיבור. פורמט: HH:MM:SS,mmm.
-
-עקרון מפתח: נורמליזציה לכתיב תקני של לשון הקודש:
-יש ליישם תיקון אוטומטי של הגיית לשון הקודש חזרה לכתיב התקני העברי הסטנדרטי:
-- עיצורים: 'כסיב'/'שבס' -> כתיב/שבת. 'בראסיס' -> בראשית. 'מיתרה' -> מטרה.
-- תנועות: 'שולויים'/'קוֹדוֹיש' -> שלום/קדוש. 'סויד'/'חוכמו' -> סוד/חכמה. 'חילק'/'אימת' -> חלק/אמת.
-- מונחי מפתח: 'שבס קוידש' -> שבת קודש. 'עוילם' -> עולם. 'עיון' -> עיון. 'קא' נשאר קא. 'להוי' -> להיות.
+חוקי איכות התמלול והסנכרון:
+1. תמלול נקי (Clean Verbatim): התעלם ממילות מילוי.
+2. מניעת הזיות: אל תמציא טקסט בשתיקות.
+3. כתובית עד 7 מילים או 5 שניות.
+4. פורמט זמנים: HH:MM:SS,mmm.
 
 כללי פלט JSON (Strict):
-הפלט חייב להיות אובייקט JSON תקין בלבד, ללא שום טקסט נוסף או עיצוב (ללא סימון \`\`\`json).
-קריטי: אסור להשתמש במרכאות כפולות (") בתוך ערכי הטקסט (summary או text). השתמש בגרש יחיד (') בלבד. אל תרד שורות בתוך הטקסט.
-* שים לב: הדוגמה הבאה נועדה להמחשת המבנה, חיתוך הזמנים וניקוי הרעשים בלבד. התוכן, כמובן, יהיה שונה בהתאם לאודיו שתקבל.
-דוגמת ביצוע (Few-Shot Example):
-דוגמה לאודיו בו הדובר אומר: "אז... אהה... אנחנו לומדים היום על... שבס קוידש. ו... זה כמובן מאוד חשוב."
-פלט מצופה:
+הפלט חייב להיות אובייקט JSON תקין בלבד. אל תשתמש במרכאות כפולות (") בתוך הטקסט, השתמש בגרש יחיד (').
+דוגמה לפלט:
 {
-  "summary": "הדובר פותח את השיעור ומציין שהיום נלמד על חשיבותה של שבת קודש.",
+  "summary": "סיכום השיחה",
   "subtitles": [
-    {"start":"00:00:01,000","end":"00:00:03,500","text":"אז אנחנו לומדים היום על"},
-    {"start":"00:00:03,500","end":"00:00:05,200","text":"שבת קודש."},
-    {"start":"00:00:06,000","end":"00:00:08,000","text":"וזה כמובן מאוד חשוב."}
+    {"start":"00:00:01,000","end":"00:00:03,500","text":"טקסט דוגמה"}
   ]
 }`;
 
@@ -149,7 +130,7 @@ app.post('/api/transcribe', async (req, res) => {
         ];
         
         if (promptCtx) {
-            requestParts.push({ text: `הקשר לאודיו זה שיעזור לך בתמלול: ${promptCtx}` });
+            requestParts.push({ text: `הקשר לאודיו זה: ${promptCtx}` });
         }
 
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -166,7 +147,6 @@ app.post('/api/transcribe', async (req, res) => {
 
         if (!response.ok) {
             const errText = await response.text();
-            console.error('Google API Error:', errText);
             return res.status(response.status).json({ error: 'שגיאת API מגוגל', details: errText });
         }
 
@@ -186,23 +166,13 @@ app.post('/api/chat', async (req, res) => {
         const { apiKey, modelName, historyForApi, contextSubs, msgPrompt } = req.body;
         
         if (!apiKey) return res.status(400).json({ error: 'חסר מפתח API' });
-        if (!historyForApi || !Array.isArray(historyForApi) || historyForApi.length === 0) {
-            return res.status(400).json({ error: 'היסטוריית הצ\'אט חסרה או לא תקינה במבנה המצופה' });
-        }
-
+        
         const model = modelName || 'gemini-2.5-flash';
 
         const systemInstructionText = `
         You are a smart assistant for a transcription app.
         Use the following transcript JSON for grounding: ${JSON.stringify(contextSubs || [])}.
-        
-        Instructions:
-        1. Answer in Hebrew based ONLY on the transcript.
-        2. If the answer is found in specific segments, citation is MANDATORY.
-        3. Citation format: Append [[id:mm:ss]] to the relevant sentence. 
-        4. Format lists using simple bullet points.
-        5. DO NOT REPEAT THE TRANSCRIPT. Summarize and answer concisely.
-        6. If the text contains [דובר] or [שואל], prefix your response with that tag to indicate who is speaking.
+        Answer in Hebrew.
         `;
 
         const safeHistory = JSON.parse(JSON.stringify(historyForApi));
@@ -224,7 +194,6 @@ app.post('/api/chat', async (req, res) => {
 
         if (!response.ok) {
             const errText = await response.text();
-            console.error('Google Chat API Error:', errText);
             return res.status(response.status).json({ error: 'שגיאת API מגוגל', details: errText });
         }
         
@@ -243,6 +212,19 @@ app.get('/api/wakeup', (req, res) => {
     res.json({ status: 'awake', message: 'בוקר טוב! השרת התעורר ומוכן לעבודה.' });
 });
 
-app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
-});
+// ==========================================
+// הפעלת השרת רק לאחר התחברות למונגו
+// ==========================================
+mongoose.connect(process.env.MONGO_URI)
+    .then(() => {
+        console.log('✅ Connected to MongoDB Atlas');
+        
+        // רק כעת השרת מתחיל להאזין לבקשות
+        app.listen(PORT, () => {
+            console.log(`Server is running on port ${PORT}`);
+        });
+    })
+    .catch(err => {
+        console.error('❌ MongoDB Connection Error:', err.message);
+        process.exit(1); 
+    });
