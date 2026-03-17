@@ -2,16 +2,56 @@ const express = require('express');
 const cors = require('cors');
 // הוספנו את זה כדי לפתור את קריסת השרת ולתמוך ב-fetch
 const fetch = require('node-fetch'); 
-
+const mongoose = require('mongoose'); // שורה חדשה
 const app = express();
 const PORT = process.env.PORT || 3000;
+// --- חיבור למסד הנתונים MongoDB Atlas ---
+mongoose.connect(process.env.MONGO_URI)
+    .then(() => console.log('✅ Connected to MongoDB Atlas'))
+    .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
+// הגדרת מבנה הטבלה לשמירת מפתחות (Schema)
+const userSchema = new mongoose.Schema({
+    email: { type: String, unique: true, required: true },
+    apiKey: String,
+    updatedAt: { type: Date, default: Date.now }
+});
+const User = mongoose.model('User', userSchema);
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); // מאפשר קבלת קבצי JSON גדולים (כמו היסטוריית תמלול)
+// שמירת מפתח API למשתמש
+app.post('/api/save-user-key', async (req, res) => {
+    try {
+        const { email, apiKey } = req.body;
+        if (!email || !apiKey) return res.status(400).json({ error: 'חסרים נתונים' });
+        
+        await User.findOneAndUpdate(
+            { email: email.toLowerCase() },
+            { apiKey: apiKey, updatedAt: Date.now() },
+            { upsert: true } // יוצר משתמש חדש אם הוא לא קיים
+        );
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 
+// שליפת מפתח API למשתמש
+app.get('/api/get-user-key', async (req, res) => {
+    try {
+        const email = req.query.email;
+        if (!email) return res.status(400).json({ error: 'חסר אימייל' });
+        
+        const user = await User.findOne({ email: email.toLowerCase() });
+        res.json({ apiKey: user ? user.apiKey : null });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
 // ==========================================
 // 1. נתיב התמלול (גרסה משופרת לסנכרון ואי-תרגום)
 // ==========================================
+
 app.post('/api/transcribe', async (req, res) => {
     // הגדלת זמן ה-Timeout של הבקשה הספציפית הזו בשרת (לדוגמה: 5 דקות)
     req.setTimeout(300000); 
