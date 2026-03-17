@@ -155,7 +155,12 @@ app.post('/api/chat', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-
+// ==========================================
+// 3. נתיב השכמה (Ping) למניעת הירדמות מוחלטת
+// ==========================================
+app.get('/api/wakeup', (req, res) => {
+    res.json({ status: 'awake', message: 'בוקר טוב! השרת התעורר ומוכן לעבודה.' });
+});
 app.listen(PORT, () => {
     console.log(`Server is running on port ${PORT}`);
 });
