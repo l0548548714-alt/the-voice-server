@@ -214,7 +214,7 @@ app.post('/api/chat', async (req, res) => {
                 systemInstruction: { parts: [{ text: systemInstructionText }] },
                 contents: safeHistory,
                 generationConfig: { 
-                    maxOutputTokens: 8192 // גם כאן הבטחנו טווח רחב לתשובה
+                    maxOutputTokens: 65536 // גם כאן הבטחנו טווח רחב לתשובה
                 }
             })
         });
