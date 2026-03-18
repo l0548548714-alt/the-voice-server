@@ -102,28 +102,40 @@ app.post('/api/transcribe', async (req, res) => {
 
         const model = modelName || 'gemini-2.5-flash';
         
-        const systemInstructionText = `תפקיד: מומחה תמלול וסנכרון כתוביות מקצועי.
-המטרה: להפיק תמלול מדויק בפורמט JSON הכולל כתוביות (SRT style) וסיכום.
+        // עדכנו את ההנחיות לסיכום קצר וקולע יותר
+        const systemInstructionText = `תפקיד: מומחה תמלול שמע לתוכן תורני (Strict Verbatim + Zero Hallucination).
+המטרה: פלט JSON תקין בלבד — ללא שום טקסט מחוץ לאובייקט.
 
-חוקי שפה ותרגום (קריטי):
-1. אין לתרגם שפות! תמלל במקור.
-2. הקפד על כתיב עברי תקני.
+══ כללי דיוק (Zero Hallucination) ══
+1. תמלל אך ורק מה שנשמע בבירור. אסור להשלים משפטים או לנחש.
+2. כל מקטע לא ברור — כתוב בדיוק: [לא ברור]. לא [?], לא ריק, לא ניחוש.
+3. שתיקה ממושכת — אל תמציא טקסט. פשוט אל תכניס כתובית.
 
-חוקי איכות התמלול והסנכרון:
-1. תמלול נקי (Clean Verbatim): התעלם ממילות מילוי.
-2. מניעת הזיות: אל תמציא טקסט בשתיקות.
-3. כתובית עד 7 מילים או 5 שניות.
-4. פורמט זמנים: HH:MM:SS,mmm.
+══ שמירת שפת מקור ══
+4. עברית, ארמית, ייִדיש, לדינו — השאר בדיוק כנאמר. אסור לתרגם או למדרניז.
+5. ציטוטים מגמרא/מדרש/תנ"ך — שמור בלשון המקור המדויקת.
+6. שגיאות דקדוק של הדובר — שמור כמו שהן. אל תתקן.
 
-כללי פלט JSON (Strict):
-הפלט חייב להיות אובייקט JSON תקין בלבד. אל תשתמש במרכאות כפולות (") בתוך הטקסט, השתמש בגרש יחיד (').
-דוגמה לפלט:
+══ פיסוק וקריאות ══
+7. הוסף נקודות, פסיקים וסימני שאלה לפי אינטונציה.
+8. מספרים — תמיד במילים ( "שמונה עשרה" ולא 18 ).
+9. כתובית אחת: עד 8 מילים, עד 6 שניות.
+
+══ הקשר ══
+10. השתמש בטקסט ה"הקשר" לזיהוי שמות ומונחים ייחודיים.
+
+══ סיכום ══
+2-3 משפטים. ישר לעניין — ללא "בשיעור זה הרב מסביר...".
+
+══ פורמט פלט חובה ══
 {
-  "summary": "סיכום השיחה",
+  "summary": "...",
   "subtitles": [
-    {"start":"00:00:01,000","end":"00:00:03,500","text":"טקסט דוגמה"}
+    {"start":"00:00:01,000","end":"00:00:04,500","text":"..."},
+    {"start":"00:00:04,500","end":"00:00:08,000","text":"[לא ברור] המשך המשפט."}
   ]
-}`;
+}
+אזהרה: אסור להשתמש ב-" בתוך ערכי הטקסט. השתמש ב-' בלבד לציטוטים.`;
 
         const requestParts = [
             { fileData: { mimeType: mimeType || 'audio/mpeg', fileUri: fileUri } }
@@ -141,7 +153,10 @@ app.post('/api/transcribe', async (req, res) => {
             body: JSON.stringify({
                 systemInstruction: { parts: [{ text: systemInstructionText }] },
                 contents: [{ parts: requestParts }],
-                generationConfig: { responseMimeType: "application/json" }
+                generationConfig: { 
+                    responseMimeType: "application/json",
+                    maxOutputTokens: 8192 // הגדלה קריטית כדי למנוע חיתוך של קבצים ארוכים
+                }
             })
         });
 
@@ -169,10 +184,12 @@ app.post('/api/chat', async (req, res) => {
         
         const model = modelName || 'gemini-2.5-flash';
 
+        // הוספנו הנחיה ברורה לענות בצורה קצרה וקולעת
         const systemInstructionText = `
         You are a smart assistant for a transcription app.
         Use the following transcript JSON for grounding: ${JSON.stringify(contextSubs || [])}.
         Answer in Hebrew.
+        Keep your answers short, concise, and to the point. Avoid long paragraphs unless specifically asked for a detailed explanation.
         `;
 
         const safeHistory = JSON.parse(JSON.stringify(historyForApi));
@@ -188,7 +205,10 @@ app.post('/api/chat', async (req, res) => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
                 systemInstruction: { parts: [{ text: systemInstructionText }] },
-                contents: safeHistory 
+                contents: safeHistory,
+                generationConfig: { 
+                    maxOutputTokens: 8192 // גם כאן הבטחנו טווח רחב לתשובה
+                }
             })
         });
 
