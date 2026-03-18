@@ -88,9 +88,38 @@ app.get('/api/get-user-key', verifyFirebaseToken, async (req, res) => {
 });
 
 // ==========================================
+// מנגנון הגנה נגד ספאם (Rate Limiting)
+// ==========================================
+const userRequests = new Map(); // שומר את זמני הבקשות בזיכרון השרת
+
+const rateLimiter = (req, res, next) => {
+    // שולף את ה-IP של המשתמש (תומך גם בשרתים כמו Render שמסתירים את ה-IP מאחורי פרוקסי)
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const now = Date.now();
+    const cooldownMs = 60 * 1000; // זמן ההמתנה חובה: 60 שניות (דקה אחת)
+
+    if (userRequests.has(ip)) {
+        const timePassed = now - userRequests.get(ip);
+        
+        if (timePassed < cooldownMs) {
+            const timeLeft = Math.ceil((cooldownMs - timePassed) / 1000);
+            console.warn(`🚨 חסימת ספאם: ה-IP ${ip} ניסה לשלוח מהר מדי. נותרו ${timeLeft} שניות.`);
+            // מחזירים ללקוח שגיאה מסודרת בלי לפנות לגוגל בכלל
+            return res.status(429).json({ 
+                error: `שליחה מהירה מדי! אנא המתן ${timeLeft} שניות לפני תמלול נוסף.` 
+            });
+        }
+    }
+    
+    // אם הכל תקין (או שעברה דקה), נעדכן את הזמן הנוכחי ונעביר אותו הלאה לתמלול
+    userRequests.set(ip, now);
+    next();
+};
+
+// ==========================================
 // 1. נתיב התמלול (מעודכן עם Structured Outputs)
 // ==========================================
-app.post('/api/transcribe', async (req, res) => {
+app.post('/api/transcribe', rateLimiter, async (req, res) => {
     req.setTimeout(300000); 
 
     try {
@@ -133,7 +162,6 @@ app.post('/api/transcribe', async (req, res) => {
                 generationConfig: { 
                     responseMimeType: "application/json",
                     maxOutputTokens: 65536,
-                    // 🔥 סכמת הנתונים שמכריחה את המודל להחזיר JSON תקני:
                     responseSchema: {
                         type: "OBJECT",
                         properties: {
@@ -157,29 +185,40 @@ app.post('/api/transcribe', async (req, res) => {
             })
         });
 
-       if (!response.ok) {
-    const errText = await response.text();
-    return res.status(response.status).json({ error: 'שגיאת API מגוגל', details: errText });
-}
+        if (!response.ok) {
+            const errText = await response.text();
+            return res.status(response.status).json({ error: 'שגיאת API מגוגל', details: errText });
+        }
 
-const geminiData = await response.json();
-const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
+        // --- תיקון הפענוח כאן ---
+        const geminiData = await response.json();
+        
+        // גוגל כבר מחזיר לנו JSON אובייקט תקין בגלל ה-responseMimeType
+        // לכן אנחנו לא צריכים לעשות JSON.parse, אלא רק לשלוף את הטקסט ולהחזיר אותו.
+        
+        const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
+        
+        if (!rawText) {
+             return res.status(500).json({ error: 'לא התקבל טקסט מגוגל' });
+        }
+        
+        // למרות שהגדרנו JSON, לפעמים גוגל עוטף אותו. ליתר ביטחון ננקה:
+        let cleanText = rawText.replace(/```json/gi, '').replace(/```/gi, '').trim();
 
-if (rawText) {
-    try {
-        const parsed = JSON.parse(rawText);
-        return res.json(parsed);
-    } catch(e) {
-        return res.status(500).json({ error: 'תשובת גוגל לא תקינה', details: rawText });
-    }
-}
-        return res.json(geminiData);
+        try {
+            const parsedData = JSON.parse(cleanText);
+            return res.json(parsedData);
+        } catch (e) {
+            console.error('JSON Parse Error in server:', e);
+            return res.status(500).json({ error: 'תשובת גוגל לא תקינה (שגיאת פענוח)', details: cleanText });
+        }
 
     } catch (error) {
         console.error('Transcription Error:', error);
         res.status(500).json({ error: 'אירעה שגיאה בתהליך התמלול', details: error.message });
     }
 });
+
 // ==========================================
 // 2. נתיב הצ'אט
 // ==========================================
@@ -191,7 +230,6 @@ app.post('/api/chat', async (req, res) => {
         
         const model = modelName || 'gemini-2.5-flash';
 
-        // הוספנו הנחיה ברורה לענות בצורה קצרה וקולעת
         const systemInstructionText = `
         You are a smart assistant for a transcription app.
         Use the following transcript JSON for grounding: ${JSON.stringify(contextSubs || [])}.
@@ -214,7 +252,7 @@ app.post('/api/chat', async (req, res) => {
                 systemInstruction: { parts: [{ text: systemInstructionText }] },
                 contents: safeHistory,
                 generationConfig: { 
-                    maxOutputTokens: 65536 // גם כאן הבטחנו טווח רחב לתשובה
+                    maxOutputTokens: 65536 
                 }
             })
         });
