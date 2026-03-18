@@ -173,12 +173,6 @@ if (rawText) {
         return res.status(500).json({ error: 'תשובת גוגל לא תקינה', details: rawText });
     }
 }
-
-return res.json(geminiData);
-        }
-
-        res.json(await response.json());
-
     } catch (error) {
         console.error('Transcription Error:', error);
         res.status(500).json({ error: 'אירעה שגיאה בתהליך התמלול', details: error.message });
