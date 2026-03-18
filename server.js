@@ -134,7 +134,7 @@ app.post('/api/transcribe', async (req, res) => {
     {"start":"00:00:01,000","end":"00:00:04,500","text":"..."},
     {"start":"00:00:04,500","end":"00:00:08,000","text":"[לא ברור] המשך המשפט."}
   ]
-}
+}`;
 
         const requestParts = [
             { fileData: { mimeType: mimeType || 'audio/mpeg', fileUri: fileUri } }
