@@ -157,9 +157,24 @@ app.post('/api/transcribe', async (req, res) => {
             })
         });
 
-        if (!response.ok) {
-            const errText = await response.text();
-            return res.status(response.status).json({ error: 'שגיאת API מגוגל', details: errText });
+       if (!response.ok) {
+    const errText = await response.text();
+    return res.status(response.status).json({ error: 'שגיאת API מגוגל', details: errText });
+}
+
+const geminiData = await response.json();
+const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+if (rawText) {
+    try {
+        const parsed = JSON.parse(rawText);
+        return res.json(parsed);
+    } catch(e) {
+        return res.status(500).json({ error: 'תשובת גוגל לא תקינה', details: rawText });
+    }
+}
+
+return res.json(geminiData);
         }
 
         res.json(await response.json());
