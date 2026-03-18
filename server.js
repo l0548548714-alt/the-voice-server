@@ -111,7 +111,7 @@ app.post('/api/transcribe', async (req, res) => {
 3. שמור על שפת המקור במדויק (עברית, ארמית), כולל ציטוטים.
 4. הוסף סימני פיסוק לפי האינטונציה.
 5. מספרים - תמיד במילים ("שמונה עשרה" ולא 18).
-6. כתובית אחת: עד 8 מילים, עד 6 שניות.
+6. כתובית אחת: עד 40 מילים, עד 30 שניות.
 7. כתוב סיכום קצר ולעניין (2-3 משפטים) של נושא השיעור.`;
 
         const requestParts = [
@@ -132,7 +132,7 @@ app.post('/api/transcribe', async (req, res) => {
                 contents: [{ parts: requestParts }],
                 generationConfig: { 
                     responseMimeType: "application/json",
-                    maxOutputTokens: 8192,
+                    maxOutputTokens: 65536,
                     // 🔥 סכמת הנתונים שמכריחה את המודל להחזיר JSON תקני:
                     responseSchema: {
                         type: "OBJECT",
