@@ -1,7 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch'); 
-const { v4: uuidv4 } = require('uuid'); // ← חדש: npm install uuid
+const { v4: uuidv4 } = require('uuid');
 console.log('🔍 MONGO_URI:', process.env.MONGO_URI?.substring(0, 60));
 const mongoose = require('mongoose');
 
@@ -52,10 +52,7 @@ const User = mongoose.model('User', userSchema);
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); 
 
-// ----------------------------------------------------
-// 🔒 שמירת מפתח API למשתמש
-// ----------------------------------------------------
-// שומר את הסטטוס והתוצאות של משימות התמלול (בשרתים אמיתיים שומרים את זה ב-Database כמו Redis)
+// שומר את הסטטוס והתוצאות של משימות התמלול
 const transcriptionJobs = {};
 
 app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
@@ -77,9 +74,6 @@ app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
     }
 });
 
-// ----------------------------------------------------
-// 🔒 שליפת מפתח API למשתמש
-// ----------------------------------------------------
 app.get('/api/get-user-key', verifyFirebaseToken, async (req, res) => {
     try {
         const secureEmail = req.userEmail;
@@ -92,7 +86,7 @@ app.get('/api/get-user-key', verifyFirebaseToken, async (req, res) => {
 });
 
 // ==========================================
-// מנגנון הגנה נגד ספאם (Rate Limiting)
+// מנגנון הגנה נגד ספאם — משמש רק לנתיבים שאינם תמלול
 // ==========================================
 const userRequests = new Map();
 
@@ -118,9 +112,9 @@ const rateLimiter = (req, res, next) => {
 };
 
 // ==========================================
-// 1. נתיב התמלול — אסינכרוני עם Polling
+// 1. נתיב התמלול — ללא rate limiter כדי לאפשר עיבוד קבצים ארוכים בקטעים
 // ==========================================
-app.post('/api/transcribe', rateLimiter, async (req, res) => {
+app.post('/api/transcribe', async (req, res) => {
     try {
         const { apiKey, fileUri, mimeType, modelName, promptCtx } = req.body;
         
@@ -130,22 +124,16 @@ app.post('/api/transcribe', rateLimiter, async (req, res) => {
 
         const model = modelName || 'gemini-2.5-flash';
 
-        // 1. צור מזהה ייחודי למשימה הזו
         const jobId = uuidv4();
 
-        // 2. שמור את המשימה ב"זיכרון" של השרת בסטטוס "processing"
         transcriptionJobs[jobId] = {
             status: 'processing',
             result: null,
             error: null
         };
 
-        // 3. החזר תשובה מיידית לדפדפן — Render לא ינתק את הבקשה
         res.status(202).json({ jobId: jobId, status: 'processing' });
 
-        // ================================================================
-        // 4. התחל את התהליך מול Gemini *ברקע* (לא חוסם את ה-res)
-        // ================================================================
         (async () => {
             try {
                 const systemInstructionText = `תפקיד: אתה מומחה לתמלול אודיו, המתמחה בשפה העברית ובלשון הקודש, עם יכולת זיהוי פונטית גבוהה והמרה לכתיב תקני.
@@ -225,6 +213,7 @@ app.post('/api/transcribe', rateLimiter, async (req, res) => {
 
                 if (!response.ok) {
                     const errText = await response.text();
+                    console.error(`❌ Gemini API Error for job ${jobId}:`, errText.substring(0, 500));
                     transcriptionJobs[jobId] = { status: 'error', error: 'שגיאת API מגוגל', details: errText };
                     return;
                 }
@@ -233,6 +222,7 @@ app.post('/api/transcribe', rateLimiter, async (req, res) => {
                 const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
                 
                 if (!rawText) {
+                    console.error(`❌ Empty response from Gemini for job ${jobId}`);
                     transcriptionJobs[jobId] = { status: 'error', error: 'לא התקבל טקסט מגוגל' };
                     return;
                 }
@@ -241,14 +231,19 @@ app.post('/api/transcribe', rateLimiter, async (req, res) => {
 
                 try {
                     const parsedData = JSON.parse(cleanText);
-                    // 5. הכל הצליח — שמור תוצאה ושנה סטטוס ל-completed
                     transcriptionJobs[jobId] = {
                         status: 'completed',
                         result: parsedData
                     };
                 } catch (e) {
-                    console.error('JSON Parse Error in server:', e);
-                    transcriptionJobs[jobId] = { status: 'error', error: 'תשובת גוגל לא תקינה (שגיאת פענוח)', details: cleanText };
+                    console.error(`❌ JSON Parse Error for job ${jobId}:`, e.message);
+                    console.error('Response length:', cleanText.length);
+                    console.error('Last 300 chars:', cleanText.slice(-300));
+                    transcriptionJobs[jobId] = { 
+                        status: 'error', 
+                        error: `תשובת גוגל לא תקינה (שגיאת פענוח JSON). אורך תשובה: ${cleanText.length} תווים`,
+                        details: cleanText.slice(-500) 
+                    };
                 }
 
             } catch (backgroundError) {
@@ -276,7 +271,7 @@ app.get('/api/transcribe/status/:jobId', (req, res) => {
 
     if (job.status === 'completed' || job.status === 'error') {
         res.json(job);
-        delete transcriptionJobs[jobId]; // ניקוי הזיכרון אחרי שהדפדפן קיבל את התשובה
+        delete transcriptionJobs[jobId];
     } else {
         res.json({ status: 'processing' });
     }
