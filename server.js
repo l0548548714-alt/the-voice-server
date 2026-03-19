@@ -142,7 +142,7 @@ app.post('/api/transcribe', rateLimiter, async (req, res) => {
 5. מספרים - תמיד במילים ("שמונה עשרה" ולא 18).
 6. כתובית אחת: עד 40 מילים, עד 30 שניות.
 7. כתוב סיכום קצר ולעניין (2-3 משפטים) של נושא השיעור.`;
-
+8. חובה לשמור על סדר כרונולוגי עולה ועקבי של חותמות הזמן (Timestamps) לאורך כל התמלול, ללא קפיצות אחורה בזמן
         const requestParts = [
             { fileData: { mimeType: mimeType || 'audio/mpeg', fileUri: fileUri } }
         ];
