@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch'); 
+const { v4: uuidv4 } = require('uuid'); // ← חדש: npm install uuid
 console.log('🔍 MONGO_URI:', process.env.MONGO_URI?.substring(0, 60));
 const mongoose = require('mongoose');
 
@@ -54,6 +55,9 @@ app.use(express.json({ limit: '50mb' }));
 // ----------------------------------------------------
 // 🔒 שמירת מפתח API למשתמש
 // ----------------------------------------------------
+// שומר את הסטטוס והתוצאות של משימות התמלול (בשרתים אמיתיים שומרים את זה ב-Database כמו Redis)
+const transcriptionJobs = {};
+
 app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
     try {
         const secureEmail = req.userEmail; 
@@ -114,11 +118,9 @@ const rateLimiter = (req, res, next) => {
 };
 
 // ==========================================
-// 1. נתיב התמלול
+// 1. נתיב התמלול — אסינכרוני עם Polling
 // ==========================================
 app.post('/api/transcribe', rateLimiter, async (req, res) => {
-    req.setTimeout(300000); 
-
     try {
         const { apiKey, fileUri, mimeType, modelName, promptCtx } = req.body;
         
@@ -127,8 +129,26 @@ app.post('/api/transcribe', rateLimiter, async (req, res) => {
         }
 
         const model = modelName || 'gemini-2.5-flash';
-        
-        const systemInstructionText = `תפקיד: אתה מומחה לתמלול אודיו, המתמחה בשפה העברית ובלשון הקודש, עם יכולת זיהוי פונטית גבוהה והמרה לכתיב תקני.
+
+        // 1. צור מזהה ייחודי למשימה הזו
+        const jobId = uuidv4();
+
+        // 2. שמור את המשימה ב"זיכרון" של השרת בסטטוס "processing"
+        transcriptionJobs[jobId] = {
+            status: 'processing',
+            result: null,
+            error: null
+        };
+
+        // 3. החזר תשובה מיידית לדפדפן — Render לא ינתק את הבקשה
+        res.status(202).json({ jobId: jobId, status: 'processing' });
+
+        // ================================================================
+        // 4. התחל את התהליך מול Gemini *ברקע* (לא חוסם את ה-res)
+        // ================================================================
+        (async () => {
+            try {
+                const systemInstructionText = `תפקיד: אתה מומחה לתמלול אודיו, המתמחה בשפה העברית ובלשון הקודש, עם יכולת זיהוי פונטית גבוהה והמרה לכתיב תקני.
 המשימה: תמלל במדויק את קובץ האודיו המצורף לשפה עברית תקנית ורצופה. מטרת העל היא להפיק תמלול מדויק פונטית-סמנטית — לשקף את המשמעות המילולית והכתיב התקני של המילים, גם אם ההגייה בפועל שונה מהנורמה.
 
 ## 1. הנחיות לשוניות וכללי תעתיק (עדיפות עליונה)
@@ -161,73 +181,104 @@ app.post('/api/transcribe', rateLimiter, async (req, res) => {
 7. תמלל את הקובץ **במלואו**, מהשנייה הראשונה ועד האחרונה, מילה במילה. אסור לעצור, לדלג, לקצר או לסכם חלקים, גם אם הקובץ ארוך.
 8. כתוב סיכום קצר (2–3 משפטים) של נושא השיעור.`;
 
-        const requestParts = [
-            { fileData: { mimeType: mimeType || 'audio/mpeg', fileUri: fileUri } }
-        ];
-        
-        if (promptCtx) {
-            requestParts.push({ text: `הקשר לאודיו זה: ${promptCtx}` });
-        }
-
-        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-        
-        const response = await fetch(geminiUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                systemInstruction: { parts: [{ text: systemInstructionText }] },
-                contents: [{ parts: requestParts }],
-                generationConfig: { 
-                    responseMimeType: "application/json",
-                    maxOutputTokens: 65536,
-                    responseSchema: {
-                        type: "OBJECT",
-                        properties: {
-                            summary: { type: "STRING" },
-                            subtitles: {
-                                type: "ARRAY",
-                                items: {
-                                    type: "OBJECT",
-                                    properties: {
-                                        start: { type: "STRING" },
-                                        end: { type: "STRING" },
-                                        text: { type: "STRING" }
-                                    },
-                                    required: ["start", "end", "text"]
-                                }
-                            }
-                        },
-                        required: ["summary", "subtitles"]
-                    }
+                const requestParts = [
+                    { fileData: { mimeType: mimeType || 'audio/mpeg', fileUri: fileUri } }
+                ];
+                
+                if (promptCtx) {
+                    requestParts.push({ text: `הקשר לאודיו זה: ${promptCtx}` });
                 }
-            })
-        });
 
-        if (!response.ok) {
-            const errText = await response.text();
-            return res.status(response.status).json({ error: 'שגיאת API מגוגל', details: errText });
-        }
+                const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+                
+                const response = await fetch(geminiUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        systemInstruction: { parts: [{ text: systemInstructionText }] },
+                        contents: [{ parts: requestParts }],
+                        generationConfig: { 
+                            responseMimeType: "application/json",
+                            maxOutputTokens: 65536,
+                            responseSchema: {
+                                type: "OBJECT",
+                                properties: {
+                                    summary: { type: "STRING" },
+                                    subtitles: {
+                                        type: "ARRAY",
+                                        items: {
+                                            type: "OBJECT",
+                                            properties: {
+                                                start: { type: "STRING" },
+                                                end: { type: "STRING" },
+                                                text: { type: "STRING" }
+                                            },
+                                            required: ["start", "end", "text"]
+                                        }
+                                    }
+                                },
+                                required: ["summary", "subtitles"]
+                            }
+                        }
+                    })
+                });
 
-        const geminiData = await response.json();
-        const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
-        
-        if (!rawText) {
-             return res.status(500).json({ error: 'לא התקבל טקסט מגוגל' });
-        }
-        
-        let cleanText = rawText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+                if (!response.ok) {
+                    const errText = await response.text();
+                    transcriptionJobs[jobId] = { status: 'error', error: 'שגיאת API מגוגל', details: errText };
+                    return;
+                }
 
-        try {
-            const parsedData = JSON.parse(cleanText);
-            return res.json(parsedData);
-        } catch (e) {
-            console.error('JSON Parse Error in server:', e);
-            return res.status(500).json({ error: 'תשובת גוגל לא תקינה (שגיאת פענוח)', details: cleanText });
-        }
+                const geminiData = await response.json();
+                const rawText = geminiData?.candidates?.[0]?.content?.parts?.[0]?.text;
+                
+                if (!rawText) {
+                    transcriptionJobs[jobId] = { status: 'error', error: 'לא התקבל טקסט מגוגל' };
+                    return;
+                }
+                
+                let cleanText = rawText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+
+                try {
+                    const parsedData = JSON.parse(cleanText);
+                    // 5. הכל הצליח — שמור תוצאה ושנה סטטוס ל-completed
+                    transcriptionJobs[jobId] = {
+                        status: 'completed',
+                        result: parsedData
+                    };
+                } catch (e) {
+                    console.error('JSON Parse Error in server:', e);
+                    transcriptionJobs[jobId] = { status: 'error', error: 'תשובת גוגל לא תקינה (שגיאת פענוח)', details: cleanText };
+                }
+
+            } catch (backgroundError) {
+                console.error('Background task error:', backgroundError);
+                transcriptionJobs[jobId] = { status: 'error', error: 'שגיאה כללית בתהליך הרקע', details: backgroundError.message };
+            }
+        })();
 
     } catch (error) {
-        console.error('Transcription Error:', error);
-        res.status(500).json({ error: 'אירעה שגיאה בתהליך התמלול', details: error.message });
+        console.error('Transcription Init Error:', error);
+        res.status(500).json({ error: 'אירעה שגיאה באתחול התמלול' });
+    }
+});
+
+// ==========================================
+// 1b. נתיב בדיקת מצב משימה (Polling)
+// ==========================================
+app.get('/api/transcribe/status/:jobId', (req, res) => {
+    const jobId = req.params.jobId;
+    const job = transcriptionJobs[jobId];
+
+    if (!job) {
+        return res.status(404).json({ error: 'משימה לא נמצאה' });
+    }
+
+    if (job.status === 'completed' || job.status === 'error') {
+        res.json(job);
+        delete transcriptionJobs[jobId]; // ניקוי הזיכרון אחרי שהדפדפן קיבל את התשובה
+    } else {
+        res.json({ status: 'processing' });
     }
 });
 
