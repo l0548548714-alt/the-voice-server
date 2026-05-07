@@ -48,12 +48,21 @@ const userSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
+// --- הגדרת מודל למשימות תמלול ---
+const jobSchema = new mongoose.Schema({
+    jobId: { type: String, unique: true, required: true },
+    status: { type: String, enum: ['processing', 'completed', 'error'], default: 'processing' },
+    result: mongoose.Schema.Types.Mixed,
+    error: String,
+    details: String,
+    createdAt: { type: Date, default: Date.now, expires: 86400 }
+});
+const Job = mongoose.model('Job', jobSchema);
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); 
 
-// שומר את הסטטוס והתוצאות של משימות התמלול
-const transcriptionJobs = {};
+// שומר את הסטטוס והתוצאות של משימות התמלול  
 
 app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
     try {
@@ -126,11 +135,8 @@ app.post('/api/transcribe', async (req, res) => {
 
         const jobId = uuidv4();
 
-        transcriptionJobs[jobId] = {
-            status: 'processing',
-            result: null,
-            error: null
-        };
+        // יצירת רשומה חדשה ב-MongoDB
+        await Job.create({ jobId: jobId, status: 'processing' });
 
         res.status(202).json({ jobId: jobId, status: 'processing' });
 
@@ -214,7 +220,7 @@ app.post('/api/transcribe', async (req, res) => {
                 if (!response.ok) {
                     const errText = await response.text();
                     console.error(`❌ Gemini API Error for job ${jobId}:`, errText.substring(0, 500));
-                    transcriptionJobs[jobId] = { status: 'error', error: 'שגיאת API מגוגל', details: errText };
+                    await Job.findOneAndUpdate({ jobId: jobId }, { status: 'error', error: 'שגיאת API מגוגל', details: errText });
                     return;
                 }
 
@@ -223,7 +229,7 @@ app.post('/api/transcribe', async (req, res) => {
                 
                 if (!rawText) {
                     console.error(`❌ Empty response from Gemini for job ${jobId}`);
-                    transcriptionJobs[jobId] = { status: 'error', error: 'לא התקבל טקסט מגוגל' };
+                    await Job.findOneAndUpdate({ jobId: jobId }, { status: 'error', error: 'לא התקבל טקסט מגוגל' });
                     return;
                 }
                 
@@ -231,24 +237,24 @@ app.post('/api/transcribe', async (req, res) => {
 
                 try {
                     const parsedData = JSON.parse(cleanText);
-                    transcriptionJobs[jobId] = {
+                    await Job.findOneAndUpdate({ jobId: jobId }, {
                         status: 'completed',
                         result: parsedData
-                    };
+                    });
                 } catch (e) {
                     console.error(`❌ JSON Parse Error for job ${jobId}:`, e.message);
                     console.error('Response length:', cleanText.length);
                     console.error('Last 300 chars:', cleanText.slice(-300));
-                    transcriptionJobs[jobId] = { 
+                    await Job.findOneAndUpdate({ jobId: jobId }, { 
                         status: 'error', 
                         error: `תשובת גוגל לא תקינה (שגיאת פענוח JSON). אורך תשובה: ${cleanText.length} תווים`,
                         details: cleanText.slice(-500) 
-                    };
+                    });
                 }
 
             } catch (backgroundError) {
                 console.error('Background task error:', backgroundError);
-                transcriptionJobs[jobId] = { status: 'error', error: 'שגיאה כללית בתהליך הרקע', details: backgroundError.message };
+                await Job.findOneAndUpdate({ jobId: jobId }, { status: 'error', error: 'שגיאה כללית בתהליך הרקע', details: backgroundError.message });
             }
         })();
 
@@ -259,21 +265,25 @@ app.post('/api/transcribe', async (req, res) => {
 });
 
 // ==========================================
-// 1b. נתיב בדיקת מצב משימה (Polling)
+// 1b. נתיב בדיקת מצב משימה (Polling) - מעודכן ל-MongoDB
 // ==========================================
-app.get('/api/transcribe/status/:jobId', (req, res) => {
-    const jobId = req.params.jobId;
-    const job = transcriptionJobs[jobId];
+app.get('/api/transcribe/status/:jobId', async (req, res) => {
+    try {
+        const jobId = req.params.jobId;
+        // מחפשים את המשימה ב-MongoDB במקום בזיכרון השרת
+        const job = await Job.findOne({ jobId: jobId });
 
-    if (!job) {
-        return res.status(404).json({ error: 'משימה לא נמצאה' });
-    }
+        if (!job) {
+            return res.status(404).json({ error: 'משימה לא נמצאה' });
+        }
 
-    if (job.status === 'completed' || job.status === 'error') {
+        // מחזירים את האובייקט המלא (סטטוס, תוצאה או שגיאה)
         res.json(job);
-        delete transcriptionJobs[jobId];
-    } else {
-        res.json({ status: 'processing' });
+        
+        // אין צורך למחוק ידנית - הגדרנו ב-Schema שהרשומה נמחקת לבד אחרי 24 שעות
+    } catch (error) {
+        console.error('Status check error:', error);
+        res.status(500).json({ error: 'שגיאה בבדיקת סטטוס המשימה' });
     }
 });
 
