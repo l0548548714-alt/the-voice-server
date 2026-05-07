@@ -296,7 +296,7 @@ app.post('/api/chat', async (req, res) => {
         
         if (!apiKey) return res.status(400).json({ error: 'חסר מפתח API' });
         
-        const model = modelName || 'gemini-2.5-flash';
+        const model = modelName || 'gemini-2.5-flash'; 
 
         const systemInstructionText = `
         You are a smart assistant for a transcription app.
