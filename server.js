@@ -2,8 +2,47 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch'); 
 const { v4: uuidv4 } = require('uuid');
-console.log('🔍 MONGO_URI:', process.env.MONGO_URI?.substring(0, 60));
 const mongoose = require('mongoose');
+const crypto = require('crypto');
+
+// --- 🔒 אבטחה: הגדרות הצפנה מתקדמות (AES-256-GCM) ---
+const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+
+if (!ENCRYPTION_KEY || Buffer.from(ENCRYPTION_KEY, 'hex').length !== 32) {
+    console.error('❌ ENCRYPTION_KEY חסר או לא חוקי! חובה להגדיר מחרוזת HEX של 64 תווים ב-Render.');
+    process.exit(1);
+}
+
+const IV_LENGTH = 12;
+
+function encrypt(text) {
+    if (!text) return text;
+    try {
+        const iv = crypto.randomBytes(IV_LENGTH);
+        const cipher = crypto.createCipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY, 'hex'), iv);
+        let encrypted = cipher.update(text, 'utf8', 'hex');
+        encrypted += cipher.final('hex');
+        const authTag = cipher.getAuthTag().toString('hex');
+        return `${iv.toString('hex')}:${encrypted}:${authTag}`;
+    } catch (e) { console.error('Encryption error:', e); return text; }
+}
+
+function decrypt(text) {
+    if (!text) return text;
+    try {
+        const parts = text.split(':');
+        // אם המבנה אינו GCM (3 חלקים), מחזיר null
+        if (parts.length !== 3) return null;
+        const iv = Buffer.from(parts[0], 'hex');
+        const encryptedText = parts[1];
+        const authTag = Buffer.from(parts[2], 'hex');
+        const decipher = crypto.createDecipheriv('aes-256-gcm', Buffer.from(ENCRYPTION_KEY, 'hex'), iv);
+        decipher.setAuthTag(authTag);
+        let decrypted = decipher.update(encryptedText, 'hex', 'utf8');
+        decrypted += decipher.final('utf8');
+        return decrypted;
+    } catch (e) { console.error('Decryption error:', e); return null; }
+}
 
 // --- 🔒 אבטחה: הגדרת פיירבייס בשרת ---
 const admin = require('firebase-admin');
@@ -48,9 +87,10 @@ const userSchema = new mongoose.Schema({
     updatedAt: { type: Date, default: Date.now }
 });
 const User = mongoose.model('User', userSchema);
+
 // --- הגדרת מודל למשימות תמלול ---
 const jobSchema = new mongoose.Schema({
-    jobId: { type: String, unique: true, required: true },
+    jobId: { type: String, unique: true, required: true, index: true },
     status: { type: String, enum: ['processing', 'completed', 'error'], default: 'processing' },
     result: mongoose.Schema.Types.Mixed,
     error: String,
@@ -62,8 +102,9 @@ const Job = mongoose.model('Job', jobSchema);
 app.use(cors());
 app.use(express.json({ limit: '50mb' })); 
 
-// שומר את הסטטוס והתוצאות של משימות התמלול  
-
+// ==========================================
+// ניהול מפתחות API של המשתמש
+// ==========================================
 app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
     try {
         const secureEmail = req.userEmail; 
@@ -71,9 +112,11 @@ app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
         
         if (!apiKey && apiKey !== '') return res.status(400).json({ error: 'חסר מפתח API' });
         
+        const encryptedKey = encrypt(apiKey); // הצפנת המפתח
+
         await User.findOneAndUpdate(
             { email: secureEmail.toLowerCase() },
-            { apiKey: apiKey, updatedAt: Date.now() },
+            { apiKey: encryptedKey, updatedAt: Date.now() },
             { upsert: true } 
         );
         res.json({ success: true });
@@ -87,7 +130,8 @@ app.get('/api/get-user-key', verifyFirebaseToken, async (req, res) => {
     try {
         const secureEmail = req.userEmail;
         const user = await User.findOne({ email: secureEmail.toLowerCase() });
-        res.json({ apiKey: user ? user.apiKey : null });
+        const decryptedKey = user && user.apiKey ? decrypt(user.apiKey) : null;
+        res.json({ apiKey: decryptedKey });
     } catch (error) {
         console.error('❌ get-user-key error:', error.message);
         res.status(500).json({ error: error.message });
@@ -95,35 +139,41 @@ app.get('/api/get-user-key', verifyFirebaseToken, async (req, res) => {
 });
 
 // ==========================================
-// מנגנון הגנה נגד ספאם — משמש רק לנתיבים שאינם תמלול
+// מנגנון הגנה נגד ספאם
 // ==========================================
 const userRequests = new Map();
 
-const rateLimiter = (req, res, next) => {
-    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+// ניקוי זיכרון כל דקה
+setInterval(() => {
     const now = Date.now();
-    const cooldownMs = 60 * 1000;
+    for (let [identifier, timestamp] of userRequests.entries()) {
+        if (now - timestamp > 60000) userRequests.delete(identifier);
+    }
+}, 60000);
 
-    if (userRequests.has(ip)) {
-        const timePassed = now - userRequests.get(ip);
+const rateLimiter = (req, res, next) => {
+    const identifier = req.userEmail || req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const now = Date.now();
+    const cooldownMs = 10 * 1000; // 10 שניות
+
+    if (userRequests.has(identifier)) {
+        const timePassed = now - userRequests.get(identifier);
         
         if (timePassed < cooldownMs) {
-            const timeLeft = Math.ceil((cooldownMs - timePassed) / 1000);
-            console.warn(`🚨 חסימת ספאם: ה-IP ${ip} ניסה לשלוח מהר מדי. נותרו ${timeLeft} שניות.`);
             return res.status(429).json({ 
-                error: `שליחה מהירה מדי! אנא המתן ${timeLeft} שניות לפני תמלול נוסף.` 
+                error: `שליחה מהירה מדי! נסה שוב בעוד מספר שניות.` 
             });
         }
     }
     
-    userRequests.set(ip, now);
+    userRequests.set(identifier, now);
     next();
 };
 
 // ==========================================
-// 1. נתיב התמלול — ללא rate limiter כדי לאפשר עיבוד קבצים ארוכים בקטעים
+// 1. נתיב התמלול (מאובטח)
 // ==========================================
-app.post('/api/transcribe', async (req, res) => {
+app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) => {
     try {
         const { apiKey, fileUri, mimeType, modelName, promptCtx } = req.body;
         
@@ -131,96 +181,145 @@ app.post('/api/transcribe', async (req, res) => {
             return res.status(400).json({ error: 'חסר מפתח API או File URI של הקובץ' });
         }
 
-        const model = modelName || 'gemini-2.5-flash';
+        // 🛡️ SSRF Validation קשוח
+        try {
+            const parsedUri = new URL(fileUri);
+            if (parsedUri.hostname !== 'generativelanguage.googleapis.com') {
+                return res.status(400).json({ error: 'URI לא מורשה (SSRF Protection).' });
+            }
+        } catch (e) {
+            return res.status(400).json({ error: 'כתובת URI לא חוקית.' });
+        }
 
+        const model = modelName || 'gemini-2.5-flash';
         const jobId = uuidv4();
 
         // יצירת רשומה חדשה ב-MongoDB
         await Job.create({ jobId: jobId, status: 'processing' });
-
         res.status(202).json({ jobId: jobId, status: 'processing' });
 
         (async () => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000); // 10 דקות מקסימום
+
             try {
                 // === הנחיית מערכת קשוחה מותאמת אישית לשיעורי תורה ===
-                const systemInstructionText = `תפקיד: אתה "מניח" (מתמלל) מומחה של שיעורי תורה, ברמה של תלמיד חכם מובהק. אתה שולט בשפה העברית, לשון הקודש, ארמית תלמודית, יידיש, וסלנג מודרני/ישיבתי.
-המשימה: תמלול מדויק של דברי הרב לפי חוקים נוקשים של אפס הזיות (ZERO HALLUCINATIONS) והתאמה לספרות התורנית.
+                const systemInstructionText = `[1] תפקיד והקשר תורני
+אתה מומחה תמלול מתקדם המתמחה בתוכן תורני של קהילות חרדיות אשכנזיות. התוכן הוא לימודי ולא שיח יומיומי (שיעורי תורה, דרשות, פלפול, קושיה ותירוץ).
+משימתך: שחזור המשמעות האמיתית והמדויקת של הדובר — העדף תמיד פירושים תורניים, מושגים מהש"ס, פוסקים והקשרים ישיבתיים.
 
-[חוקי ברזל לטקסט]
-1. השענות אקוסטית בלבד: אל תמציא, תנחש או תשלים מילים. טקסט שלא נשמע בבירור יסומן מיד כ-[לא ברור].
+==================================================
+[2] טיפול ברעשי רקע ודוברים
+==================================================
+- התעלם לחלוטין מרעשי רקע (שיעול, הזזת כיסאות, רשרושים) ושתיקות.
+- אם יש יותר מדובר אחד, ציין זאת בקצרה: "הרב:", "שאלה:". תגובת קהל תירשם כ: (קהל: אמן).
 
-[1. ניקוי גמגומים]
-נקה את התמלול מגמגומים, מילות הרהור ("אה", "אממ") וחזרות מיותרות על אותה מילה. התמלול חייב להיות נקי וקריא, אך עליך לשמור על כל מילה בעלת משמעות או תוכן.
+==================================================
+[3] עקרונות עבודה, דיוק לשוני ועקביות לאורך זמן
+==================================================
+1. תמלול מלא ואחיד: אין לקצר, אין לדלג על קטעים או חזרות. תמלל במלואו עד סוף האודיו ואל תעבור ל"מצב סיכום" בקבצים ארוכים!
+2. דיוק לשוני אבסולוטי: אל תשפר את ניסוח הדובר, אל תהפוך משפטים ל"רשמיים", ושמור על טעויות דיבור טבעיות ומילות מעבר (נו, כלומר, ממילא, דהיינו).
+3. אפס הזיות: אל תוסיף מילים שלא נאמרו. מילה חלקית נרשמת כ-[?]. קטע לא פוענח נרשם כ-[לא מובן].
+4. נאמנות לשפה: אל תתרגם יידיש לעברית, כתוב בדיוק כפי שנשמע.
+5. מספרים ותאריכים: כתוב בצורה תורנית קריאה (דף כ"ג, סימן רמ"ב).
 
-[2. שילוב שפות (יידיש / אנגלית / סלנג)]
-חובה לתמלל מילים משפות אחרות או סלנג בדיוק מוחלט כפי שנאמרו, באותיות עבריות (או במקור אם זה באנגלית מובהקת), ללא שום ניסיון לתרגם לעברית תקנית! (לדוגמה: "א גוטע סברא", "טאקע", "ממילא", "למעשה", "אקשלי").
+==================================================
+[4] זיכרון פנימי ושמירת עקביות
+==================================================
+שים לב לשמות, מושגים מרכזיים, ראשי תיבות וסגנון הדובר שמופיעים לאורך הקובץ, ושמור על איות זהה ועקביות מוחלטת שלהם מההתחלה ועד הסוף.
 
-[3. ראשי תיבות]
-כתוב את המילים כפי שנאמרו. אל תפתח ואל תסגור ראשי תיבות על דעת עצמך, *אלא אם כן* מדובר במושג מובהק שתמיד נכתב בראשי תיבות בספרות התורנית הקלאסית (לדוגמה: אם נאמר "רבי משה בן מימון" כתוב כפי שנאמר. אם נאמר "רמב"ם" כתוב רמב"ם ולא במילים. אם ההקשר מצדיק, אפשר לכתוב ע"ז, ק"ש, וכד').
+==================================================
+[5] דוגמאות המרה וגלוסרי הגייה (אשכנזית -> כתיב תקני)
+==================================================
+חובה להמיר את ההגייה לכתיב המקורי:
+- "שבּוס" -> שבת | "סוירה" / "סורה" -> תורה | "עוילם" -> עולם
+- "יוים-טוב" -> יום טוב | "מיצוואס" -> מצוות | "קוידש" -> קודש | "דאַוונען" -> דאוונען
 
-[4. מראי מקומות וציונים (חובה לקצר)]
-כאשר הרב מציין מקור, חובה לכתוב זאת בקיצור התורני המקובל.
-* דוגמה לגמרא: "בבא קמא דף ל עמוד א" ייכתב כ- ב"ק ל ע"א (או בבא קמא ל ע"א).
-* דוגמה להלכה: "אורח חיים סימן ש"י סעיף קטן ב" ייכתב כ- או"ח ש"י סק"ב.
+==================================================
+[6] גלוסרי מושגים קלאסיים (לשמור כפי שנאמר)
+==================================================
+- ארמית: אמר רבא, אביי, תנא, אמורא, קא משמע לן, הוה אמינא, הכי קאמר, לשיטתו, דאורייתא, דרבנן, פשיטא, תיקו.
+- הלכה וספרות: רש"י, תוספות, רמב"ן, שולחן ערוך, משנה ברורה, קשה, ויש לומר, לכתחילה, בדיעבד.
 
-[כללי המרה: הגייה ישיבתית לכתיב תקני]
-עליך להאזין לצליל ולהמירו לכתיב המקורי:
-* ס' בסוף/אמצע מילה שנשמע כמו ת' רפה -> יתומלל כ-ת' (לדוגמה: "מסכתס" -> מסכתות, "שבס" -> שבת, "טויספויס" -> תוספות).
-* תנועות אשכנזיות -> יתומללו בכתיב תקני (לדוגמה: "תוירה" -> תורה, "מעיישה" -> מעשה).
-* ארמית -> לשמור על הכתיב הארמי המקורי (לדוגמה: "מאי קא משמע לן", "סברא").
+==================================================
+[7] בדיקה עצמית לפני הפלט
+==================================================
+וודא עם עצמך: האם שמרתי על עקביות שמות? האם לא דילגתי על קטעים? האם לא הוספתי מילים שלא נאמרו?
 
-[חוקי עיצוב הפלט (SRT / JSON)]
-1. כל כתובית תכיל בין 5 ל-30 מילים (קריאה נוחה).
-2. שמור על רצף כרונולוגי עולה ועקבי של חותמות הזמן.
-3. בסיום, הוסף סיכום (summary) של 2-3 משפטים המתמצת את תורף הסוגיה.`;
+==================================================
+[8] פורמט הפלט (JSON בלבד!)
+==================================================
+חובה להחזיר את הפלט בדיוק לפי סכמת ה-JSON שהוגדרה לך:
+1. את הכתוביות יש להכניס למערך "subtitles".
+2. כל כתובית (text) צריכה להכיל בין 5 ל-35 מילים כדי שתהיה קריאה נוחה בנגן.
+3. שמור על רצף זמנים (start, end) הגיוני ועולה.
+4. את סיכום השיעור (3-5 נקודות קצרות של הנושאים המרכזיים) יש להכניס אך ורק לשדה ה-"summary", ולא בתוך הכתוביות.`;
+
                 const requestParts = [
                     { fileData: { mimeType: mimeType || 'audio/mpeg', fileUri: fileUri } }
                 ];
                 
                 // --- מנגנון הזרקת הקשר חי (Context) ---
                 if (promptCtx) {
-                    requestParts.push({ text: `חובה להצמד למושגים הבאים המופיעים באודיו: ${promptCtx}` });
+                    requestParts.push({ text: `מושגים הקשורים להקלטה (אם הם אכן נאמרו, השתמש באיות זה): ${promptCtx}` });
                 }
 
                 const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
                 
-                const response = await fetch(geminiUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        systemInstruction: { parts: [{ text: systemInstructionText }] },
-                        contents: [{ parts: requestParts }],
-                        generationConfig: { 
-                            responseMimeType: "application/json",
-                            maxOutputTokens: 65536,
-                            temperature: 0.1, // <--- הקסם נגד הזיות: טמפרטורה נמוכה גורמת למודל להיות מדויק ורובוטי
-                            responseSchema: {
-                                type: "OBJECT",
-                                properties: {
-                                    summary: { type: "STRING" },
-                                    subtitles: {
-                                        type: "ARRAY",
-                                        items: {
-                                            type: "OBJECT",
-                                            properties: {
-                                                start: { type: "STRING" },
-                                                end: { type: "STRING" },
-                                                text: { type: "STRING" }
-                                            },
-                                            required: ["start", "end", "text"]
-                                        }
-                                    }
-                                },
-                                required: ["summary", "subtitles"]
-                            }
-                        }
-                    })
-                });
+                let response;
+                let fetchError;
 
-                if (!response.ok) {
-                    const errText = await response.text();
-                    console.error(`❌ Gemini API Error for job ${jobId}:`, errText.substring(0, 500));
-                    await Job.findOneAndUpdate({ jobId: jobId }, { status: 'error', error: 'שגיאת API מגוגל', details: errText });
+                // 🔄 מנגנון Retry קשוח: מנסה 3 פעמים אם יש עומס בגוגל
+                for (let attempt = 1; attempt <= 3; attempt++) {
+                    try {
+                        response = await fetch(geminiUrl, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            signal: controller.signal,
+                            body: JSON.stringify({
+                                systemInstruction: { parts: [{ text: systemInstructionText }] },
+                                contents: [{ parts: requestParts }],
+                                generationConfig: { 
+                                    responseMimeType: "application/json",
+                                    maxOutputTokens: 8192, // יציב יותר למניעת קריסות
+                                    temperature: 0.1, // מניעת הזיות
+                                    responseSchema: {
+                                        type: "OBJECT",
+                                        properties: {
+                                            summary: { type: "STRING" },
+                                            subtitles: {
+                                                type: "ARRAY",
+                                                items: {
+                                                    type: "OBJECT",
+                                                    properties: {
+                                                        start: { type: "STRING" },
+                                                        end: { type: "STRING" },
+                                                        text: { type: "STRING" }
+                                                    },
+                                                    required: ["start", "end", "text"]
+                                                }
+                                            }
+                                        },
+                                        required: ["summary", "subtitles"]
+                                    }
+                                }
+                            })
+                        });
+                        if (response.ok) break; 
+                        const errBody = await response.text();
+                        fetchError = new Error(`Attempt ${attempt} failed: ${errBody.substring(0, 200)}`);
+                    } catch (e) {
+                        fetchError = e;
+                    }
+                    if (attempt < 3 && fetchError.name !== 'AbortError') await new Promise(r => setTimeout(r, 2000 * attempt));
+                }
+
+                clearTimeout(timeoutId);
+
+                if (!response || !response.ok) {
+                    const errorMsg = fetchError ? fetchError.message : 'שגיאת API מגוגל';
+                    console.error(`❌ Gemini API Error for job ${jobId}:`, errorMsg);
+                    await Job.findOneAndUpdate({ jobId: jobId }, { status: 'error', error: 'שגיאת API מגוגל', details: errorMsg });
                     return;
                 }
 
@@ -233,7 +332,10 @@ app.post('/api/transcribe', async (req, res) => {
                     return;
                 }
                 
-                let cleanText = rawText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+                // Regex משופר לחילוץ JSON (מונע קריסות פירמוט)
+                let cleanText = rawText;
+                const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
+                if (jsonMatch) cleanText = jsonMatch[0];
 
                 try {
                     const parsedData = JSON.parse(cleanText);
@@ -243,18 +345,22 @@ app.post('/api/transcribe', async (req, res) => {
                     });
                 } catch (e) {
                     console.error(`❌ JSON Parse Error for job ${jobId}:`, e.message);
-                    console.error('Response length:', cleanText.length);
-                    console.error('Last 300 chars:', cleanText.slice(-300));
                     await Job.findOneAndUpdate({ jobId: jobId }, { 
                         status: 'error', 
-                        error: `תשובת גוגל לא תקינה (שגיאת פענוח JSON). אורך תשובה: ${cleanText.length} תווים`,
+                        error: `תשובת גוגל לא תקינה (שגיאת פענוח JSON).`,
                         details: cleanText.slice(-500) 
                     });
                 }
 
             } catch (backgroundError) {
-                console.error('Background task error:', backgroundError);
-                await Job.findOneAndUpdate({ jobId: jobId }, { status: 'error', error: 'שגיאה כללית בתהליך הרקע', details: backgroundError.message });
+                clearTimeout(timeoutId);
+                if (backgroundError.name === 'AbortError') {
+                    console.error(`❌ Timeout Error for job ${jobId}`);
+                    await Job.findOneAndUpdate({ jobId: jobId }, { status: 'error', error: 'פג זמן ההמתנה. גוגל לא החזירו תשובה תוך 10 דקות (Timeout).' });
+                } else {
+                    console.error('Background task error:', backgroundError);
+                    await Job.findOneAndUpdate({ jobId: jobId }, { status: 'error', error: 'שגיאה כללית בתהליך הרקע', details: backgroundError.message });
+                }
             }
         })();
 
@@ -265,22 +371,18 @@ app.post('/api/transcribe', async (req, res) => {
 });
 
 // ==========================================
-// 1b. נתיב בדיקת מצב משימה (Polling) - מעודכן ל-MongoDB
+// 1b. נתיב בדיקת מצב משימה (Polling)
 // ==========================================
 app.get('/api/transcribe/status/:jobId', async (req, res) => {
     try {
         const jobId = req.params.jobId;
-        // מחפשים את המשימה ב-MongoDB במקום בזיכרון השרת
         const job = await Job.findOne({ jobId: jobId });
 
         if (!job) {
             return res.status(404).json({ error: 'משימה לא נמצאה' });
         }
 
-        // מחזירים את האובייקט המלא (סטטוס, תוצאה או שגיאה)
         res.json(job);
-        
-        // אין צורך למחוק ידנית - הגדרנו ב-Schema שהרשומה נמחקת לבד אחרי 24 שעות
     } catch (error) {
         console.error('Status check error:', error);
         res.status(500).json({ error: 'שגיאה בבדיקת סטטוס המשימה' });
@@ -290,7 +392,7 @@ app.get('/api/transcribe/status/:jobId', async (req, res) => {
 // ==========================================
 // 2. נתיב הצ'אט
 // ==========================================
-app.post('/api/chat', async (req, res) => {
+app.post('/api/chat', verifyFirebaseToken, rateLimiter, async (req, res) => {
     try {
         const { apiKey, modelName, historyForApi, contextSubs, msgPrompt } = req.body;
         
@@ -298,18 +400,20 @@ app.post('/api/chat', async (req, res) => {
         
         const model = modelName || 'gemini-2.5-flash'; 
 
+        // מניעת פיצוץ טוקנים בצ'אט
+        const trimmedSubs = (contextSubs || []).slice(0, 150);
+
         const systemInstructionText = `
-        You are a smart assistant for a transcription app.
-        Use the following transcript JSON for grounding: ${JSON.stringify(contextSubs || [])}.
-        Answer in Hebrew.
-        Keep your answers short, concise, and to the point. Avoid long paragraphs unless specifically asked for a detailed explanation.
+אתה עוזר בינה מלאכותית חכם באתר תמלול. 
+התבסס אך ורק על ה-JSON הבא: ${JSON.stringify(trimmedSubs)}.
+ענה בעברית ברורה ותקנית. השתדל לענות בתמציתיות ולעניין.
         `;
 
         const safeHistory = JSON.parse(JSON.stringify(historyForApi));
         
         const lastMessage = safeHistory[safeHistory.length - 1];
         if (msgPrompt && lastMessage.parts && lastMessage.parts[0]) {
-             lastMessage.parts[0].text += `\n\nUser Question: "${msgPrompt}"`;
+             lastMessage.parts[0].text += `\n\nשאלת המשתמש: "${msgPrompt}"`;
         }
 
         const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
@@ -320,7 +424,7 @@ app.post('/api/chat', async (req, res) => {
                 systemInstruction: { parts: [{ text: systemInstructionText }] },
                 contents: safeHistory,
                 generationConfig: { 
-                    maxOutputTokens: 65536 
+                    maxOutputTokens: 2048 
                 }
             })
         });
@@ -359,3 +463,4 @@ mongoose.connect(process.env.MONGO_URI)
         console.error('❌ MongoDB Connection Error:', err.message);
         process.exit(1); 
     });
+    
