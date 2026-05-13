@@ -179,7 +179,6 @@ app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) =
             const timeoutId = setTimeout(() => controller.abort(), 10 * 60 * 1000); 
 
             try {
-                const systemInstructionText = `
 const systemInstructionText = `
 ==============================
 זהות ותפקיד
