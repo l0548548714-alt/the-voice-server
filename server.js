@@ -259,26 +259,16 @@ const systemInstructionText = `
 ==============================
 פורמט פלט מחייב
 ==============================
-החזר JSON בלבד. חובה לשמור על המבנה הבא:
+החזר אך ורק טקסט גולמי בפורמט SRT תקני (SubRip). 
+אל תחזיר שום אובייקט JSON, אל תוסיף סיכומים, ואל תוסיף הערות.
+מבנה נדרש לכל כתובית:
+1
+00:00:00,000 --> 00:00:05,000
+טקסט הכתובית כאן
 
-{
-  "summary": "נושא 1 | נושא 2 | נושא 3",
-  "subtitles": [
-    {
-      "start": "HH:MM:SS,mmm",
-      "end": "HH:MM:SS,mmm",
-      "text": "..."
-    }
-  ]
-}
-
-חוקים לפלט:
-- summary:
-  - 3–5 נקודות קצרות. נושאים בלבד, ללא ציטוטים וללא פרשנות. (החזר כטקסט אחד מופרד בקו אנכי | או פסיקים, ולא כמערך).
-- subtitles:
-  - חייב להיות מערך (ARRAY) של אובייקטים.
-  - זמנים מדויקים כולל 3 ספרות של מילישניות (למשל: 00:14:05,250).
-  - טקסט הכתובית יעמוד בכל חוקי אורך הכתוביות שהוגדרו מעלה.`;
+2
+00:00:05,000 --> 00:00:10,000
+המשך טקסט`;
   const requestParts = [{ fileData: { mimeType: mimeType || 'audio/mpeg', fileUri } }];
                 
                 // 🛡️ חסימת Prompt Injection - עטיפת המידע כנתונים בלבד
@@ -298,13 +288,7 @@ const systemInstructionText = `
                             body: JSON.stringify({
                                 systemInstruction: { parts: [{ text: systemInstructionText }] },
                                 contents: [{ parts: requestParts }],
-                                generationConfig: { responseMimeType: "application/json", maxOutputTokens: 8192, temperature: 0.1,
-                                    responseSchema: {
-                                        type: "OBJECT",
-                                        properties: { summary: { type: "STRING" }, subtitles: { type: "ARRAY", items: { type: "OBJECT", properties: { start: { type: "STRING" }, end: { type: "STRING" }, text: { type: "STRING" } }, required: ["start", "end", "text"] } } },
-                                        required: ["summary", "subtitles"]
-                                    }
-                                }
+                                generationConfig: { maxOutputTokens: 8192, temperature: 0.1 }
                             })
                         });
                         if (response.ok) break;
@@ -321,18 +305,8 @@ const systemInstructionText = `
                 const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
                 if (!text) { await Job.findOneAndUpdate({ jobId }, { status: 'error', error: 'לא התקבל טקסט' }); return; }
                 
-                const match = text.match(/\{[\s\S]*\}/);
-                if (!match) throw new Error('No JSON matched');
-
-                // 🛡️ Try/Catch קשיח לפענוח JSON בתוך תהליך הרקע
-                try {
-                    const parsedData = JSON.parse(match[0]);
-                    await Job.findOneAndUpdate({ jobId }, { status: 'completed', result: parsedData });
-                } catch (parseErr) {
-                    // הוספנו פה הדפסה לקונסול השרת כדי לראות אם הטקסט נחתך באמצע
-                    console.error(`[Job ${jobId}] JSON Parse Error! Raw text from model:`, text);
-                    await Job.findOneAndUpdate({ jobId }, { status: 'error', error: 'שגיאת פענוח JSON - ייתכן שהפלט נחתך באמצע כי הקובץ ארוך מדי' });
-                }
+                // שומרים את הטקסט הגולמי (SRT) ישירות כתוצאה ללא פענוח
+                await Job.findOneAndUpdate({ jobId }, { status: 'completed', result: { text: text } });
 
             } catch (e) {
                 clearTimeout(timeoutId);
