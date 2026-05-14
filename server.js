@@ -279,6 +279,10 @@ const systemInstructionText = `
 
                 let response;
                 let fetchError;
+let response;
+                let fetchError;
+                let googleErrorDetails = "Unknown error"; // הוספנו משתנה לתפיסת השגיאה המדויקת
+
                 for (let attempt = 1; attempt <= 3; attempt++) {
                     try {
                         response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${safeModelName}:generateContent?key=${apiKey}`, {
@@ -292,12 +296,23 @@ const systemInstructionText = `
                             })
                         });
                         if (response.ok) break;
+                        
+                        // קוראים את השגיאה האמיתית שגוגל החזירה
+                        googleErrorDetails = await response.text();
+                        console.error(`[Attempt ${attempt}] Google API Error:`, googleErrorDetails);
+
                         if (![429, 500, 502, 503, 504].includes(response.status)) throw new Error('Bad Request / Unauthorized');
                         fetchError = new Error(`Attempt ${attempt} failed`);
                     } catch (e) { fetchError = e; }
                     if (attempt < 3 && fetchError && fetchError.message !== 'Bad Request / Unauthorized' && fetchError.name !== 'AbortError') await new Promise(r => setTimeout(r, 2000 * attempt));
                 }
 
+                clearTimeout(timeoutId);
+                if (!response || !response.ok) { 
+                    // מעבירים לאתר את השגיאה המדויקת שקיבלנו מגוגל
+                    await Job.findOneAndUpdate({ jobId }, { status: 'error', error: `שגיאת גוגל: ${googleErrorDetails}` }); 
+                    return; 
+                }
                 clearTimeout(timeoutId);
                 if (!response || !response.ok) { await Job.findOneAndUpdate({ jobId }, { status: 'error', error: 'שגיאת API מגוגל' }); return; }
 
