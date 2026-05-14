@@ -279,8 +279,6 @@ const systemInstructionText = `
 
                 let response;
                 let fetchError;
-let response;
-                let fetchError;
                 let googleErrorDetails = "Unknown error"; // הוספנו משתנה לתפיסת השגיאה המדויקת
 
                 for (let attempt = 1; attempt <= 3; attempt++) {
@@ -313,8 +311,6 @@ let response;
                     await Job.findOneAndUpdate({ jobId }, { status: 'error', error: `שגיאת גוגל: ${googleErrorDetails}` }); 
                     return; 
                 }
-                clearTimeout(timeoutId);
-                if (!response || !response.ok) { await Job.findOneAndUpdate({ jobId }, { status: 'error', error: 'שגיאת API מגוגל' }); return; }
 
                 const data = await response.json();
                 const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
