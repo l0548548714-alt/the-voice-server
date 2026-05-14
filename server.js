@@ -137,7 +137,11 @@ app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
 app.get('/api/get-user-key', verifyFirebaseToken, async (req, res) => {
     try {
         const user = await User.findOne({ identifier: req.userIdentifier.toLowerCase() }).lean();
-        res.json({ isConfigured: !!(user && user.apiKey) });
+        let decryptedKey = null;
+        if (user && user.apiKey) {
+            try { decryptedKey = decrypt(user.apiKey); } catch(e) {}
+        }
+        res.json({ apiKey: decryptedKey }); // מחזיר את המפתח עצמו כדי שהדפדפן יוכל להעלות קבצים
     } catch (error) { res.status(500).json({ error: 'שגיאת שרת' }); }
 });
 
