@@ -149,14 +149,18 @@ app.get('/api/get-user-key', verifyFirebaseToken, async (req, res) => {
 // 1. נתיב התמלול 
 // ==========================================
 app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) => {
-    try {
-        const { fileUri, mimeType, modelName, promptCtx } = req.body;
-        if (!fileUri) return res.status(400).json({ error: 'חסר URI' });
+    try {
+        const { fileUri, mimeType, modelName, promptCtx, apiKey: clientApiKey } = req.body;
+        if (!fileUri) return res.status(400).json({ error: 'חסר URI' });
 
-        const user = await User.findOne({ identifier: req.userIdentifier.toLowerCase() }).lean();
-        let apiKey;
-        try { apiKey = user && user.apiKey ? decrypt(user.apiKey) : null; } catch(e) {}
-        if (!apiKey) return res.status(400).json({ error: 'לא נמצא מפתח API חוקי' });
+        let apiKey = clientApiKey;
+
+        if (!apiKey) {
+            const user = await User.findOne({ identifier: req.userIdentifier.toLowerCase() }).lean();
+            try { apiKey = user && user.apiKey ? decrypt(user.apiKey) : null; } catch(e) {}
+        }
+
+        if (!apiKey) return res.status(400).json({ error: 'לא נמצא מפתח API חוקי' });
 
         // 🛡️ SSRF קשוח
         try {
