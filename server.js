@@ -329,7 +329,9 @@ const systemInstructionText = `
                     const parsedData = JSON.parse(match[0]);
                     await Job.findOneAndUpdate({ jobId }, { status: 'completed', result: parsedData });
                 } catch (parseErr) {
-                    await Job.findOneAndUpdate({ jobId }, { status: 'error', error: 'שגיאת פענוח JSON מהמודל' });
+                    // הוספנו פה הדפסה לקונסול השרת כדי לראות אם הטקסט נחתך באמצע
+                    console.error(`[Job ${jobId}] JSON Parse Error! Raw text from model:`, text);
+                    await Job.findOneAndUpdate({ jobId }, { status: 'error', error: 'שגיאת פענוח JSON - ייתכן שהפלט נחתך באמצע כי הקובץ ארוך מדי' });
                 }
 
             } catch (e) {
