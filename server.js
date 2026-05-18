@@ -260,7 +260,7 @@ app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) =
 2
 00:00:05,000 --> 00:00:10,500
 המשך טקסט
-
+`;
                 const requestParts = [{ fileData: { mimeType: mimeType || 'audio/mpeg', fileUri } }];
                 
                 if (promptCtx && promptCtx.length < 500) {
