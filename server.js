@@ -385,6 +385,13 @@ process.on('SIGTERM', async () => {
     process.exit(0);
 });
 
-mongoose.connect(process.env.MONGO_URI).then(() => {
-    app.listen(PORT, () => console.log(`Server on ${PORT}`));
-});
+// האזן לפורט מיד, לא תלוי במונגו
+app.listen(PORT, '0.0.0.0', () => console.log(`Server on ${PORT}`));
+
+// חבר למונגו בנפרד
+mongoose.connect(process.env.MONGO_URI)
+    .then(() => console.log('MongoDB connected'))
+    .catch(err => {
+        console.error('MongoDB connection failed:', err.message);
+        process.exit(1);
+    });
