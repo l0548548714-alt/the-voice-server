@@ -172,6 +172,9 @@ app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) =
             const timeoutId = setTimeout(() => controller.abort(), 20 * 60 * 1000);
 
             try {
+                // ==========================================
+                // PASS 1: תמלול ראשוני מהאודיו
+                // ==========================================
                 const systemInstructionText = `
 ==============================
 זהות, הקשר ומסגרת פעולה
@@ -260,7 +263,7 @@ app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) =
                         if (response.ok) break;
                         
                         googleErrorDetails = await response.text();
-                        console.error(`[Attempt ${attempt}] Google API Error:`, googleErrorDetails);
+                        console.error(`[Attempt ${attempt}] Google API Error (Pass 1):`, googleErrorDetails);
 
                         if (![429, 500, 502, 503, 504].includes(response.status)) throw new Error('Bad Request / Unauthorized');
                         fetchError = new Error(`Attempt ${attempt} failed`);
@@ -270,17 +273,81 @@ app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) =
                     }
                 }
 
-                clearTimeout(timeoutId);
                 if (!response || !response.ok) { 
-                    await Job.findOneAndUpdate({ jobId }, { status: 'error', error: `שגיאת גוגל: ${googleErrorDetails}` }); 
+                    clearTimeout(timeoutId);
+                    await Job.findOneAndUpdate({ jobId }, { status: 'error', error: `שגיאת גוגל בשלב הראשון: ${googleErrorDetails}` }); 
                     return; 
                 }
 
                 const data = await response.json();
-                const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-                if (!text) { await Job.findOneAndUpdate({ jobId }, { status: 'error', error: 'לא התקבל טקסט' }); return; }
+                const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
                 
-                await Job.findOneAndUpdate({ jobId }, { status: 'completed', result: { text: text } });
+                if (!rawText) { 
+                    clearTimeout(timeoutId);
+                    await Job.findOneAndUpdate({ jobId }, { status: 'error', error: 'לא התקבל טקסט מהשלב הראשון' }); 
+                    return; 
+                }
+
+                // ==========================================
+                // PASS 2: עריכה לשונית קרה לטקסט (ללא אודיו)
+                // ==========================================
+                let finalSrt = rawText; 
+                
+                const pass2SystemInstruction = `
+==============================
+זהות, תפקיד ומטרה
+==============================
+אתה תלמיד חכם ועורך לשוני מומחה לטקסטים תורניים.
+קיבלת קובץ כתוביות (SRT) שתומלל על ידי מכונה. עקב מבטא או בליעת מילים, התוכנה עשתה לעיתים "שגיאות שמיעה אקוסטיות" - היא כתבה מילים שנשמעות דומה, אבל יוצרות אבסורד בהקשר השיעור.
+
+==============================
+משימה וגבולות גזרה
+==============================
+אתה מורשה לתקן רק מילים שעונות על שני התנאים האלו ביחד:
+1. המילה יוצרת אבסורד פיזי/גשמי מוחלט בהקשר תורני (לדוגמה: "בניין מסריח" במקום "יהגה", "המצח שלו" במקום "הנצח", "חתיכת" במקום "תוספות", "בשביל קטנה" במקום "ישיבה קטנה").
+2. התיקון הוא חד-משמעי ואין לו שום אפשרות אחרת סבירה.
+
+חוק "שב ואל תעשה": אם יש ספק — אל תיגע. השאר כמו שזה. עדיף להשאיר שגיאה קטנה מאשר לערוך מחדש טקסט תקין.
+
+==============================
+חוקי ברזל לפורמט (קריטי!)
+==============================
+1. זמנים קדושים: אסור לשנות, למחוק או לגעת בחותמות זמן בשום אופן.
+2. מבנה: אסור לאחד או לפצל בלוקים של SRT. 
+3. אל תשכתב תחביר. המטרה אינה "לייפות" את השפה.
+4. החזר אך ורק טקסט גולמי בתקן SRT. ללא Markdown (כמו '''srt) וללא הקדמות.
+`;
+                try {
+                    const pass2Response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        signal: controller.signal,
+                        body: JSON.stringify({
+                            systemInstruction: { parts: [{ text: pass2SystemInstruction }] },
+                            contents: [{ role: 'user', parts: [{ text: rawText }] }],
+                            generationConfig: {
+                                maxOutputTokens: 65536,
+                                temperature: 0.1, // טמפרטורה נמוכה מאוד כדי שלא ימציא תוכן חדש
+                            }
+                        })
+                    });
+
+                    if (pass2Response.ok) {
+                        const pass2Data = await pass2Response.json();
+                        const editedText = pass2Data?.candidates?.[0]?.content?.parts?.[0]?.text;
+                        
+                        if (editedText && editedText.includes('-->')) {
+                            finalSrt = editedText; 
+                        }
+                    } else {
+                        console.error('Pass 2 failed, using Pass 1 result');
+                    }
+                } catch (pass2Err) {
+                    console.error('Error during Pass 2:', pass2Err);
+                }
+
+                clearTimeout(timeoutId);
+                await Job.findOneAndUpdate({ jobId }, { status: 'completed', result: { text: finalSrt } });
 
             } catch (e) {
                 clearTimeout(timeoutId);
