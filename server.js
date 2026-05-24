@@ -233,7 +233,7 @@ app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) =
    * שורה 1: מספר סידורי (מתחיל ב-1).
    * שורה 2: חותמות זמן.
    * שורה 3: טקסט (שורה אחת בלבד!).
-   * שורה 4: שורה ריקה אחת בדיוק בין בלוק לבלוק.
+   * שורה 4: שורה ריקה אחת בדיוק בין בלוק לבלוק.`;
                 const requestParts = [{ fileData: { mimeType: mimeType || 'audio/mpeg', fileUri } }];
                 
                 if (promptCtx && promptCtx.length < 500) {
