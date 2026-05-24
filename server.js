@@ -282,7 +282,7 @@ app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) =
 
                 const data = await response.json();
                 const rawText = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-                
+                console.log("=== RAW SRT FROM GEMINI ===\n", rawText?.substring(0, 500));
                 if (!rawText) { 
                     clearTimeout(timeoutId);
                     await Job.findOneAndUpdate({ jobId }, { status: 'error', error: 'לא התקבל טקסט מהשלב הראשון' }); 
