@@ -369,9 +369,10 @@ app.get('/api/transcribe/status/:jobId', verifyFirebaseToken, async (req, res) =
 app.post('/api/chat', verifyFirebaseToken, rateLimiter, async (req, res) => {
     try {
         const user = await User.findOne({ identifier: req.userIdentifier.toLowerCase() }).lean();
-        let apiKey;
-        try { apiKey = user && user.apiKey ? decrypt(user.apiKey) : null; } catch(e) {}
-        if (!apiKey) return res.status(400).json({ error: 'חסר מפתח API' });
+let apiKey;
+try { apiKey = user && user.apiKey ? decrypt(user.apiKey) : null; } catch(e) {}
+if (!apiKey && req.body.apiKey) apiKey = req.body.apiKey;
+if (!apiKey) return res.status(400).json({ error: 'חסר מפתח API' });
         
         const { modelName, historyForApi, contextSubs, msgPrompt } = req.body;
 
