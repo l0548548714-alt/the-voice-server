@@ -119,11 +119,18 @@ setInterval(async () => {
 
 app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
     try {
-        if (!req.body.apiKey) return res.status(400).json({ error: 'חסר מפתח' });
-        const safeKey = encrypt(req.body.apiKey);
-        await User.findOneAndUpdate({ identifier: req.userIdentifier.toLowerCase() }, { apiKey: safeKey, updatedAt: Date.now() }, { upsert: true });
+        const newKey = req.body.apiKey || '';
+        const safeKey = newKey ? encrypt(newKey) : '';
+        await User.findOneAndUpdate(
+            { identifier: String(req.userIdentifier).toLowerCase() }, 
+            { apiKey: safeKey, updatedAt: Date.now() }, 
+            { upsert: true }
+        );
         res.json({ success: true });
-    } catch (error) { res.status(500).json({ error: 'שגיאת שרת פנימית בהצפנה' }); }
+    } catch (error) { 
+        console.error('Save Key Error:', error);
+        res.status(500).json({ error: 'שגיאת שרת פנימית בשמירת מפתח' }); 
+    }
 });
 
 app.get('/api/get-user-key', verifyFirebaseToken, async (req, res) => {
