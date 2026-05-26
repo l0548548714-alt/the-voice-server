@@ -423,7 +423,13 @@ process.on('SIGTERM', async () => {
     await mongoose.connection.close();
     process.exit(0);
 });
-
+// הגנה מוחלטת מקריסות שרת בגלל שגיאות לא צפויות
+process.on('uncaughtException', (err) => {
+    console.error('🔥 קריסה נמנעה (Uncaught Exception):', err);
+});
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('🔥 קריסה נמנעה (Unhandled Rejection):', reason);
+});
 // האזן לפורט מיד, לא תלוי במונגו
 app.listen(PORT, '0.0.0.0', () => console.log(`Server on ${PORT}`));
 
