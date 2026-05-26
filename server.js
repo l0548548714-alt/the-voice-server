@@ -265,9 +265,9 @@ requestParts.push({ text: '[מושגים לעיון בלבד: <<' + cleanCtx + '
                                 contents: [{ parts: requestParts }],
                                 generationConfig: {
                                     maxOutputTokens: 65536,
-                                    temperature: 0,
-                                    topP: 0.05,
-                                    topK: 10
+                                    temperature: 0.2,
+                                    topP: 0.1,
+                                    topK: 15
                                 }
                             })
                         });
