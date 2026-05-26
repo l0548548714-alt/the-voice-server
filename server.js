@@ -123,19 +123,17 @@ app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
         const safeKey = newKey ? encrypt(newKey) : '';
         const id = String(req.userIdentifier).toLowerCase();
         
-        let user = await User.findOne({ identifier: id });
-        if (user) {
-            user.apiKey = safeKey;
-            user.updatedAt = Date.now();
-            await user.save();
-        } else {
-            await User.create({ identifier: id, apiKey: safeKey });
-        }
+        // שימוש ב-updateOne עם $set ו-upsert עוקף בצורה נקייה בעיות אינדקסים ומבטיח שמירה תקינה בענן
+        await User.updateOne(
+            { identifier: id },
+            { $set: { apiKey: safeKey, updatedAt: Date.now() } },
+            { upsert: true }
+        );
+        
         res.json({ success: true });
     } catch (error) { 
-        console.error('Save Key Error:', error);
-        // מחזיר 200 עם false כדי לא לזרוק שגיאות אדומות בקונסול שיבהילו את המשתמש
-        res.status(200).json({ success: false, error: 'התעלמות משגיאת מסד כדי לא לתקוע את הלקוח' }); 
+        console.error('Save Key Error in MongoDB:', error);
+        res.status(500).json({ error: 'שגיאת שרת פנימית בשמירת מפתח במסד הנתונים' }); 
     }
 });
 
@@ -238,7 +236,7 @@ app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) =
 
 1. איסור MARKDOWN: אסור לעטוף את התשובה בבלוק קוד. התשובה חייבת להתחיל מיד במספר "1".
 2. איסור פטפוט: ללא הקדמות, ללא הערות, ללא סיכומים.
-3. תזמון מדויק ואמיתי: רשום את חותמת הזמן המדויקת שבה נשמעות המילים בתוך קטע האודיו. אל תתחיל מאפס אלא אם כן הדיבור מתחיל בדיוק באפס!
+3. התחל תמיד מ-00:00:00,000: מכיוון שאתה מקבל קטע שמע חתוך, הבלוק הראשון חייב להתחיל מאפס, גם אם יש שקט בהתחלה. אנו נתאים את הזמנים לכלל הקובץ במערכת שלנו.
 4. זמנים רציפים בלבד: כל בלוק מתחיל בדיוק איפה שהקודם הסתיים. אסור לדלג על זמן ואסור לחזור אחורה בזמן.
 5. כל בלוק = שורה אחת בלבד: 4-7 מילים מקסימום. אסור לחלוטין לשים 2 שורות בבלוק אחד.
 6. פורמט זמן נוקשה (HH:MM:SS,MMM --> HH:MM:SS,MMM):
@@ -249,7 +247,12 @@ app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) =
    * שורה 1: מספר סידורי (מתחיל ב-1).
    * שורה 2: חותמות זמן.
    * שורה 3: טקסט (שורה אחת בלבד!).
-   * שורה 4: שורה ריקה אחת בדיוק בין בלוק לבלוק.`;
+   * שורה 4: שורה ריקה אחת בדיוק בין בלוק לבלוק.
+
+==============================
+שכבה 7: מניעת לולאות והזיות (קריטי!)
+==============================
+אם יש שקט מוחלט או רעש ללא דיבור - אל תמציא מילים! בשום אופן אל תחזור על אותה אות או מילה פעמים רבות ברצף (לדוגמה: "ח ח ח ח"). אם אינך שומע דיבור ברור, החזר בלוק אחד עם הכיתוב [שקט] או [לא ברור] והמתן להמשך.`;
                 const requestParts = [{ fileData: { mimeType: mimeType || 'audio/mpeg', fileUri } }];
                 
                 if (promptCtx && promptCtx.length < 500) {
@@ -271,9 +274,9 @@ requestParts.push({ text: '[מושגים לעיון בלבד: <<' + cleanCtx + '
                                 contents: [{ parts: requestParts }],
                                 generationConfig: {
                                     maxOutputTokens: 65536,
-                                    temperature: 0.2,
-                                    topP: 0.1,
-                                    topK: 15
+                                    temperature: 0,
+                                    topP: 0.05,
+                                    topK: 10
                                 }
                             })
                         });
