@@ -121,15 +121,21 @@ app.post('/api/save-user-key', verifyFirebaseToken, async (req, res) => {
     try {
         const newKey = req.body.apiKey || '';
         const safeKey = newKey ? encrypt(newKey) : '';
-        await User.findOneAndUpdate(
-            { identifier: String(req.userIdentifier).toLowerCase() }, 
-            { apiKey: safeKey, updatedAt: Date.now() }, 
-            { upsert: true }
-        );
+        const id = String(req.userIdentifier).toLowerCase();
+        
+        let user = await User.findOne({ identifier: id });
+        if (user) {
+            user.apiKey = safeKey;
+            user.updatedAt = Date.now();
+            await user.save();
+        } else {
+            await User.create({ identifier: id, apiKey: safeKey });
+        }
         res.json({ success: true });
     } catch (error) { 
         console.error('Save Key Error:', error);
-        res.status(500).json({ error: 'שגיאת שרת פנימית בשמירת מפתח' }); 
+        // מחזיר 200 עם false כדי לא לזרוק שגיאות אדומות בקונסול שיבהילו את המשתמש
+        res.status(200).json({ success: false, error: 'התעלמות משגיאת מסד כדי לא לתקוע את הלקוח' }); 
     }
 });
 
@@ -232,7 +238,7 @@ app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) =
 
 1. איסור MARKDOWN: אסור לעטוף את התשובה בבלוק קוד. התשובה חייבת להתחיל מיד במספר "1".
 2. איסור פטפוט: ללא הקדמות, ללא הערות, ללא סיכומים.
-3. התחל תמיד מ-00:00:00,000: הבלוק הראשון חייב להתחיל מאפס, גם אם יש שקט בהתחלה.
+3. תזמון מדויק ואמיתי: רשום את חותמת הזמן המדויקת שבה נשמעות המילים בתוך קטע האודיו. אל תתחיל מאפס אלא אם כן הדיבור מתחיל בדיוק באפס!
 4. זמנים רציפים בלבד: כל בלוק מתחיל בדיוק איפה שהקודם הסתיים. אסור לדלג על זמן ואסור לחזור אחורה בזמן.
 5. כל בלוק = שורה אחת בלבד: 4-7 מילים מקסימום. אסור לחלוטין לשים 2 שורות בבלוק אחד.
 6. פורמט זמן נוקשה (HH:MM:SS,MMM --> HH:MM:SS,MMM):
