@@ -274,9 +274,10 @@ requestParts.push({ text: '[מושגים לעיון בלבד: <<' + cleanCtx + '
                                 contents: [{ parts: requestParts }],
                                 generationConfig: {
                                     maxOutputTokens: 65536,
-                                    temperature: 0,
+                                    temperature: 0.1, // העלינו טיפה כדי לשחרר את התקיעות
                                     topP: 0.05,
-                                    topK: 10
+                                    topK: 10,
+                                    frequencyPenalty: 1.5 // פקודה קריטית! קונסת את המודל על חזרה של מילים
                                 }
                             })
                         });
