@@ -143,7 +143,8 @@ app.post('/api/transcribe', verifyFirebaseToken, rateLimiter, async (req, res) =
         let apiKey = clientApiKey;
         if (!apiKey) {
             const user = await User.findOne({ identifier: req.userIdentifier.toLowerCase() }).lean();
-            try { apiKey = user && user.apiKey ? decrypt(user.apiKey) : null; } catch(e) {}
+            try { apiKey = user && user.apiKey ? decrypt(user.apiKey) : null; } catch(e) { console.error('Decryption fail:', e.message); }
+            
         }
         if (!apiKey) return res.status(400).json({ error: 'לא נמצא מפתח API חוקי' });
 
@@ -266,7 +267,8 @@ requestParts.push({ text: '[מושגים לעיון בלבד: <<' + cleanCtx + '
                         googleErrorDetails = await response.text();
                         console.error(`[Attempt ${attempt}] Google API Error (Pass 1):`, googleErrorDetails);
 
-                        if (![429, 500, 502, 503, 504].includes(response.status)) throw new Error('Bad Request / Unauthorized');
+                        if (response.status === 429) throw new Error('QUOTA_EXHAUSTED');
+if (![500, 502, 503, 504].includes(response.status)) throw new Error('Bad Request / Unauthorized');
                         fetchError = new Error(`Attempt ${attempt} failed`);
                     } catch (e) { fetchError = e; }
                     if (attempt < 3 && fetchError && fetchError.message !== 'Bad Request / Unauthorized' && fetchError.name !== 'AbortError') {
@@ -370,7 +372,7 @@ app.post('/api/chat', verifyFirebaseToken, rateLimiter, async (req, res) => {
     try {
         const user = await User.findOne({ identifier: req.userIdentifier.toLowerCase() }).lean();
 let apiKey;
-try { apiKey = user && user.apiKey ? decrypt(user.apiKey) : null; } catch(e) {}
+try { apiKey = user && user.apiKey ? decrypt(user.apiKey) : null; } catch(e) { console.error('Decryption fail:', e.message); }
 if (!apiKey && req.body.apiKey) apiKey = req.body.apiKey;
 if (!apiKey) return res.status(400).json({ error: 'חסר מפתח API' });
         
